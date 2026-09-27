@@ -9,7 +9,7 @@ config/negocio.json
 *.db-*
 
 # Python
-.venv/
+.venv
 __pycache__/
 *.pyc
 .pytest_cache/
