@@ -22,6 +22,8 @@ services:
       - FRONTEND_URL=http://localhost:3030
       - POSTGRES_HOST=postgres
       - REDIS_URL=redis://redis:6379
+      # Solo en local: sin esto, SafeFetch bloquea el webhook al bot en host.docker.internal (IP privada).
+      - SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true
     depends_on:
       - postgres
       - redis
@@ -44,6 +46,8 @@ services:
       - FRONTEND_URL=http://localhost:3030
       - POSTGRES_HOST=postgres
       - REDIS_URL=redis://redis:6379
+      # Solo en local: sin esto, SafeFetch bloquea el webhook al bot en host.docker.internal (IP privada).
+      - SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true
     depends_on:
       - postgres
       - redis
