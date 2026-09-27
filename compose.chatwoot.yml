@@ -8,6 +8,9 @@
 #
 # Acceso: http://localhost:3030
 
+# Nombre fijo: el proyecto y sus volúmenes son los mismos desde cualquier checkout o worktree.
+name: whatsapp-order-agent-chatwoot
+
 services:
   rails:
     image: chatwoot/chatwoot:v4.18.0
