@@ -26,8 +26,6 @@ class MensajeEntrante(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     evento: str
-    tipo_mensaje: str
-    privado: bool
     id_mensaje: int | None = None
     contenido: str = ""
     cantidad_adjuntos: int = 0
@@ -70,8 +68,6 @@ def _armar_mensaje(crudo: dict[str, Any]) -> MensajeEntrante:
     adjuntos = crudo.get("attachments")
     return MensajeEntrante(
         evento=_texto(crudo.get("event")) or "message_created",
-        tipo_mensaje="incoming",
-        privado=False,
         id_mensaje=_entero(crudo.get("id")),
         contenido=_texto(crudo.get("content")),
         cantidad_adjuntos=len(adjuntos) if isinstance(adjuntos, list) else 0,
@@ -115,7 +111,6 @@ class ClienteChatwoot:
         self._cliente_http = cliente_http
 
     def responder(self, id_conversacion: int, texto: str) -> None:
-        # R53: credenciales perezosas, se leen al usar y nunca al construir el cliente
         base_url = os.environ.get("CHATWOOT_URL", "")
         account_id = os.environ.get("CHATWOOT_ACCOUNT_ID", "")
         token = os.environ.get("CHATWOOT_BOT_TOKEN", "")
