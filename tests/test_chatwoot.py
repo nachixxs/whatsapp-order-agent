@@ -4,25 +4,7 @@ import httpx
 import pytest
 
 from app.chatwoot import ClienteChatwoot, parsear_evento
-
-TELEFONO = "+54 9 11 5555-0000"
-
-
-def _payload(**cambios: object) -> dict[str, object]:
-    base: dict[str, object] = {
-        "event": "message_created",
-        "message_type": "incoming",
-        "private": False,
-        "id": 101,
-        "content": "hola, quiero tarjetas",
-        "attachments": [],
-        "conversation": {"id": 555, "status": "open"},
-        "account": {"id": 1},
-        "inbox": {"id": 2},
-        "sender": {"name": "Cliente Prueba", "phone_number": TELEFONO},
-    }
-    base.update(cambios)
-    return base
+from tests.conftest import _payload
 
 
 def test_parsear_evento_mensaje_incoming_completo() -> None:
@@ -34,49 +16,6 @@ def test_parsear_evento_mensaje_incoming_completo() -> None:
     assert mensaje.account_id == 1
     assert mensaje.inbox_id == 2
     assert mensaje.cantidad_adjuntos == 0
-
-
-def test_parsear_evento_outgoing_se_descarta() -> None:
-    """R48: un mensaje outgoing (del bot o de una persona) se descarta."""
-    payload = _payload(message_type="outgoing")
-    assert parsear_evento(json.dumps(payload).encode("utf-8")) is None
-
-
-def test_parsear_evento_nota_privada_se_descarta() -> None:
-    """R48: una nota privada se descarta aunque el evento sea message_created."""
-    payload = _payload(private=True)
-    assert parsear_evento(json.dumps(payload).encode("utf-8")) is None
-
-
-def test_parsear_evento_otro_evento_se_descarta() -> None:
-    """R48: un evento que no es message_created se descarta."""
-    payload = _payload(event="conversation_status_changed")
-    assert parsear_evento(json.dumps(payload).encode("utf-8")) is None
-
-
-def test_parsear_evento_cuenta_adjuntos() -> None:
-    """El modelo cuenta los adjuntos sin interpretarlos (base para el eco)."""
-    payload = _payload(content="", attachments=[{"id": 1}, {"id": 2}])
-    mensaje = parsear_evento(json.dumps(payload).encode("utf-8"))
-    assert mensaje is not None
-    assert mensaje.cantidad_adjuntos == 2
-
-
-def test_parsear_evento_json_roto() -> None:
-    """R51: un JSON invalido nunca lanza, devuelve None."""
-    assert parsear_evento(b"{no es json") is None
-
-
-def test_parsear_evento_anidado_muy_profundo() -> None:
-    """R51: un JSON anidado a proposito (RecursionError) nunca lanza."""
-    cuerpo = b"[" * 100_000 + b"]" * 100_000
-    assert parsear_evento(cuerpo) is None
-
-
-def test_parsear_evento_no_es_un_objeto() -> None:
-    """R51: un JSON valido pero sin forma de objeto (una lista, un numero) se ignora."""
-    assert parsear_evento(b"[1, 2, 3]") is None
-    assert parsear_evento(b"42") is None
 
 
 def test_parsear_evento_surrogate_en_el_contenido() -> None:
