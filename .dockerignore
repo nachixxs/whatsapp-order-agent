@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+.venv
+capturas
+.git
+tests
+*.md
+!README.md
+.pytest_cache
+__pycache__
+*.pyc
+*.db
+*.db-*

@@ -1,0 +1,33 @@
+# Compose del bot (whatsapp-order-agent). Build local, no imagen publicada.
+#
+# Cómo le llega Chatwoot al bot (tarea 1.5, tunel/webhook):
+#   Chatwoot corre en su propio contenedor (compose.chatwoot.yml) y el bot en este compose.
+#   Desde adentro del contenedor de Chatwoot, la URL del bot para el webhook es:
+#     http://host.docker.internal:8020/webhook/chatwoot?token=<CHATWOOT_WEBHOOK_SECRET>
+#   `host.docker.internal` resuelve al host en Docker Desktop (Windows/Mac); en Linux hace
+#   falta el extra_hosts que ya está declarado abajo.
+#
+# Ojo: si más adelante se usa un tunel público (ngrok/cloudflared) para exponer Chatwoot o el
+# bot a Meta, algunos proveedores de webhook bloquean URLs privadas/internas como
+# host.docker.internal o 127.0.0.1. Si eso pasa acá, la alternativa es poner a Chatwoot y al
+# bot en la misma red de Docker (una red externa compartida) y apuntar el webhook al nombre
+# del servicio del bot en esa red, en vez de host.docker.internal.
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file: .env
+    ports:
+      - "127.0.0.1:8020:8020"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8020/salud')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    mem_limit: 512m
