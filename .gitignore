@@ -17,3 +17,7 @@ __pycache__/
 # Claude Code
 .claude/worktrees/
 CLAUDE.local.md
+
+# Documentos: viven en las notas privadas; el repo versiona solo el README
+*.md
+!README.md
