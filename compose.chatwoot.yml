@@ -6,7 +6,8 @@
 # Secretos en .env.chatwoot (ignorado por .gitignore vía ".env.*"; no se versiona).
 # Ejemplo sin valores reales: chatwoot.env.example.
 #
-# Acceso: http://localhost:3030
+# Acceso: http://localhost:3030. FRONTEND_URL va en .env.chatwoot: con WhatsApp Cloud tiene que ser la URL
+# pública del túnel, porque Chatwoot la usa para configurar solo el webhook en Meta.
 
 # Nombre fijo: el proyecto y sus volúmenes son los mismos desde cualquier checkout o worktree.
 name: whatsapp-order-agent-chatwoot
@@ -19,7 +20,6 @@ services:
       - NODE_ENV=production
       - RAILS_ENV=production
       - INSTALLATION_ENV=docker
-      - FRONTEND_URL=http://localhost:3030
       - POSTGRES_HOST=postgres
       - POSTGRES_USERNAME=postgres
       - REDIS_URL=redis://redis:6379
@@ -44,7 +44,6 @@ services:
       - NODE_ENV=production
       - RAILS_ENV=production
       - INSTALLATION_ENV=docker
-      - FRONTEND_URL=http://localhost:3030
       - POSTGRES_HOST=postgres
       - POSTGRES_USERNAME=postgres
       - REDIS_URL=redis://redis:6379
