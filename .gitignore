@@ -1,0 +1,19 @@
+# Datos reales del negocio: viven en el repo privado de deploy, nunca acá (el repo es público)
+config/negocio.json
+.env
+.env.*
+!.env.example
+
+# Base local de la memoria de conversaciones
+*.db
+*.db-*
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Claude Code
+.claude/worktrees/
+CLAUDE.local.md
