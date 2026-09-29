@@ -1,4 +1,4 @@
-"""Utilidades de texto puras: logs sin datos del cliente, textos en una línea y teléfonos."""
+"""Texto puro: logs sin datos del cliente, textos en una línea, teléfonos, días y meses."""
 
 import hashlib
 import secrets
@@ -7,6 +7,12 @@ import unicodedata
 TOPE_LOG = 64
 ILEGIBLE = "<ilegible>"
 _SAL = secrets.token_bytes(16)  # R52: alias con sal por proceso
+# R40: sin locale. DIAS va en el orden de weekday(); MESES[mes - 1]
+DIAS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+MESES = (
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+)
 
 
 def _visible(caracter: str) -> str:
