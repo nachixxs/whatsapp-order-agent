@@ -140,6 +140,30 @@ def pregunta_por_dato(dato: str, config: ConfigNegocio) -> str:
     return _PREGUNTAS.get(dato, MENSAJE_NO_ENTENDIDO)
 
 
+def aviso_de_descartados(
+    descartados: Sequence[str], pedido: Pedido, config: ConfigNegocio
+) -> str | None:
+    """R14: con los descartados de sumar_campos, el texto que va en lugar de la repregunta o del resumen.
+
+    None: sigue el flujo normal. El nombre descartado no se avisa: el pedido queda sin él y se repregunta.
+    """
+    if "producto" in descartados:
+        return (
+            f"Eso no lo tengo en la lista. Hacemos {_familias(config)}. "
+            "¿Cuál de esos necesitás?"
+        )
+    # Si ya tenía una fecha válida, el reenvío mal resuelto se ignora y la charla sigue
+    if "fecha_necesita" in descartados and pedido.fecha_necesita is None:
+        return "Esa fecha ya pasó, así que algo entendí mal. ¿Para qué día lo necesitás?"
+    return None
+
+
+def con_aviso_de_material(texto: str, *, es_resumen: bool) -> str:
+    """R15: el aviso del turno que dejó el material a definir, delante de la repregunta o del resumen."""
+    separador = "\n\n" if es_resumen else " "
+    return f"{AVISO_MATERIAL_A_DEFINIR}{separador}{texto}"
+
+
 def resumen_pedido(pedido: Pedido, config: ConfigNegocio) -> str:
     """§7: el resumen para confirmar. fecha_necesita es cuándo lo necesita él, no una entrega (R19)."""
     if not pedido.completo or pedido.fecha_necesita is None or pedido.tiene_diseno is None:
