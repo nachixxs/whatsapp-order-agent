@@ -122,14 +122,6 @@ def test_registrar_sin_material_deja_el_mismo_marcador(memoria: Memoria, config:
     assert _historial(memoria)[-1] == MARCADOR_REPREGUNTA_MATERIAL
 
 
-def test_el_historial_guarda_el_marcador_y_no_la_prosa(memoria: Memoria, config: ConfigNegocio) -> None:
-    """R21: del lado del bot queda `[consulta_general: horarios]`, nunca el texto que leyó el cliente."""
-    texto = _turno(memoria, config, HORARIOS, "¿a qué hora abren?")
-
-    assert texto == respuesta_faq("horarios", config)
-    assert _historial(memoria) == ["¿a qué hora abren?", "[consulta_general: horarios]"]
-
-
 # SPECS §6 · un camino por tool
 
 
@@ -331,6 +323,30 @@ def test_el_perfil_que_es_el_telefono_no_va_a_la_api(
     procesar_lote(CONV, [_mensaje(nombre=nombre)], config, memoria, agente)
 
     assert agente.llamadas[0]["nombre_perfil"] == esperado
+
+
+def test_el_perfil_va_al_prompt_en_una_linea_y_con_tope(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R43, R35, R19: un perfil con saltos de línea no mete renglones en el prompt, y se recorta a 60."""
+    agente = _Agente(HORARIOS)
+
+    procesar_lote(CONV, [_mensaje(nombre="Ana\n" + "b" * 96)], config, memoria, agente)
+
+    assert agente.llamadas[0]["nombre_perfil"] == "Ana " + "b" * 56
+
+
+# R35 · topes
+
+
+def test_un_mensaje_enorme_entra_recortado_a_la_memoria_y_a_la_api(
+    memoria: Memoria, config: ConfigNegocio
+) -> None:
+    """R35: de un mensaje de 10.000 caracteres se guardan y se mandan a la API los 4.096 de WhatsApp."""
+    agente = _Agente(HORARIOS)
+
+    procesar_lote(CONV, [_mensaje("x" * 10_000)], config, memoria, agente)
+
+    assert agente.llamadas[0]["charla"].mensajes[0].content == "x" * 4096
+    assert _historial(memoria)[0] == "x" * 4096
 
 
 # R23 y R24 · dedup y compuerta

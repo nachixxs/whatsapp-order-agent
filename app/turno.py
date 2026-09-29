@@ -19,9 +19,9 @@ from app.agente import (
 )
 from app.chatwoot import Contacto, MensajeEntrante
 from app.config import ConfigNegocio
-from app.formato import alias_conversacion, para_log, solo_digitos
+from app.formato import alias_conversacion, en_una_linea, para_log, solo_digitos
 from app.memoria import Charla, ErrorMemoria, Memoria
-from app.pedidos import Pedido, sumar_campos
+from app.pedidos import TOPE_NOMBRE, Pedido, sumar_campos
 from app.respuestas import (
     MENSAJE_ERROR_INTERNO,
     MENSAJE_NO_ENTENDIDO,
@@ -41,6 +41,7 @@ Decidir = Callable[..., Decision | SinTool | ErrorApi]
 # Los motivos de SinTool con estado propio en el bot viejo; el resto es `sin_tool`
 _SIN_TOOL_CON_ESTADO = frozenset({"argumentos_invalidos", "tool_desconocida"})
 _RESUMEN = "pedido_pendiente_confirmacion"
+TOPE_MENSAJE = 4096  # R35: el de WhatsApp; el historial entero vuelve a la API en cada llamada
 
 
 @dataclass(frozen=True)
@@ -73,7 +74,7 @@ def procesar_lote(
             # R23. Sin id no hay compuerta, y sin compuerta no se procesa (R24)
             if mensaje.id_mensaje is not None and memoria.marcar_procesado(mensaje.id_mensaje, ahora):
                 nuevos.append(mensaje.id_mensaje)
-                memoria.anotar_cliente(conversacion, mensaje.contenido, ahora)
+                memoria.anotar_cliente(conversacion, mensaje.contenido[:TOPE_MENSAJE], ahora)
         if not nuevos:
             logger.info("turno: sin mensajes nuevos alias=%s", alias)
             return None
@@ -173,7 +174,8 @@ def _confirmar(argumentos: ConfirmarPedido, pedido: Pedido | None) -> _Salida:
 
 def _nombre_perfil(contacto: Contacto) -> str | None:
     """R43: sin perfil, Chatwoot le pone el teléfono de nombre; el teléfono nunca va a la API (R13)."""
-    nombre = (contacto.nombre or "").strip()
+    # R35: va al prompt entre comillas; un salto de línea metería texto en el bloque dinámico
+    nombre = en_una_linea(contacto.nombre or "")[:TOPE_NOMBRE].rstrip()
     telefono = solo_digitos(contacto.telefono or "")
     if not nombre or (telefono and solo_digitos(nombre) == telefono):
         return None

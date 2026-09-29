@@ -4,17 +4,19 @@ import logging
 from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
-from app.config import ConfigNegocio
+from app.config import ConfigNegocio, Texto
 from app.formato import en_una_linea, para_log
 from app.tools import CAMPOS_DEL_PEDIDO, MATERIAL_A_DEFINIR
 
 logger = logging.getLogger(__name__)
 
 NO_SON_NOMBRES = frozenset({"cliente", "usuario", "desconocido", "sin nombre", "no especificado"})
+# R35: con los siete campos al tope, el resumen queda lejos de los 4.096 de WhatsApp
+TOPE_NOMBRE = 60
+TOPE_CAMPO = 200
 
-Texto = Annotated[str, Field(min_length=1)]
 TieneDiseno = Literal["si", "no", "requiere_servicio"]
 
 
@@ -35,6 +37,13 @@ class Pedido(BaseModel):
     tiene_diseno: TieneDiseno | None = None
     # archivos (columna 9, R29): tarea 3.3
     fecha_necesita: date | None = None
+
+    @field_validator("nombre_cliente", "producto", "material", "medidas", mode="before")
+    @classmethod
+    def _en_una_linea(cls, valor: object, info: ValidationInfo) -> object:
+        # R19: un salto de línea del modelo sería un renglón propio en el resumen, en la voz del bot
+        tope = TOPE_NOMBRE if info.field_name == "nombre_cliente" else TOPE_CAMPO
+        return en_una_linea(valor)[:tope] if isinstance(valor, str) else valor
 
     @field_validator("material")
     @classmethod
