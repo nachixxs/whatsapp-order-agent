@@ -3,27 +3,17 @@
 from collections.abc import Sequence
 from datetime import datetime
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any
 
 from app.config import ConfigNegocio, Franja
+from app.formato import DIAS, MESES
+from app.pedidos import Pedido
 from app.tools import CAMPOS_DEL_PEDIDO, MARCADOR_REPREGUNTA_MATERIAL, MATERIAL_A_DEFINIR
 
 # R43: lo que se pasa de perfil cuando Chatwoot no trae un nombre; el prompt dice que no lo es
 NOMBRE_SIN_PERFIL = "cliente"
-# R40: sin locale
-_DIAS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
-_MESES = (
-    "enero", "febrero", "marzo", "abril", "mayo", "junio",
-    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
-)
 # Va adentro del dinámico: el modelo ve las secciones separadas se unan como se unan los bloques
 _SEPARADOR_DE_SECCIONES = "\n\n"
-
-
-class PedidoEnCurso(Protocol):
-    """Lo que el prompt lee del pedido: los campos de CAMPOS_DEL_PEDIDO y los archivos."""
-
-    archivos: Sequence[object]
 
 
 def _listar(items: Sequence[str]) -> str:
@@ -42,7 +32,7 @@ def _franjas(franjas: list[Franja]) -> str:
 def _horarios(config: ConfigNegocio) -> str:
     return "\n".join(
         f"- {nombre}: {_franjas(config.horario.del_dia(dia)) or 'cerrado'}"
-        for dia, nombre in enumerate(_DIAS)
+        for dia, nombre in enumerate(DIAS)
     )
 
 
@@ -107,7 +97,7 @@ def _valor(valor: object) -> str:
     return str(valor.value) if isinstance(valor, Enum) else str(valor)
 
 
-def _campos_cargados(pedido: PedidoEnCurso) -> list[str]:
+def _campos_cargados(pedido: Pedido) -> list[str]:
     return [
         f"- {campo}: {_valor(getattr(pedido, campo))}"
         for campo in CAMPOS_DEL_PEDIDO
@@ -115,7 +105,7 @@ def _campos_cargados(pedido: PedidoEnCurso) -> list[str]:
     ]
 
 
-def _pedido_para_el_prompt(pedido: PedidoEnCurso | None) -> str:
+def _pedido_para_el_prompt(pedido: Pedido | None) -> str:
     cargados = _campos_cargados(pedido) if pedido is not None else []
     if pedido is None or not cargados:
         return "No hay ningún pedido en curso."
@@ -137,10 +127,7 @@ def _pedido_para_el_prompt(pedido: PedidoEnCurso | None) -> str:
             "más, no confirma: llamá a `registrar_pedido` sin ningún campo, y el "
             "sistema le vuelve a mostrar el resumen para que confirme."
         )
-    if len(pedido.archivos) == 1:
-        lineas.append("Ya mandó el archivo del diseño por WhatsApp.")
-    elif pedido.archivos:
-        lineas.append(f"Ya mandó {len(pedido.archivos)} archivos del diseño por WhatsApp.")
+    # archivos (R29): tarea 3.3, con el mismo texto del bot viejo
     return "\n".join(lineas)
 
 
@@ -149,15 +136,15 @@ def bloque_dinamico(
     ahora: datetime,
     *,
     nombre_perfil: str | None,
-    pedido: PedidoEnCurso | None,
+    pedido: Pedido | None,
     nombre_preguntado: bool = False,
-    confirmado: PedidoEnCurso | None = None,
+    confirmado: Pedido | None = None,
 ) -> str:
     """R18: fecha, feriado, quién escribe y pedido. nombre_perfil None es sin perfil (R43)."""
     if ahora.tzinfo is None:  # R37: una hora sin zona se leería como la del servidor
         raise ValueError("hora sin zona: usar config.ahora()")
     hoy = ahora.astimezone(config.zona)
-    fecha = f"{_DIAS[hoy.weekday()]} {hoy.day} de {_MESES[hoy.month - 1]} de {hoy.year}"
+    fecha = f"{DIAS[hoy.weekday()]} {hoy.day} de {MESES[hoy.month - 1]} de {hoy.year}"
     # R39: la línea va solo el día del feriado
     cierre_de_hoy = (
         " Hoy el local está cerrado todo el día (feriado o día no laborable)."
@@ -191,9 +178,9 @@ def bloques_de_sistema(
     ahora: datetime,
     *,
     nombre_perfil: str | None,
-    pedido: PedidoEnCurso | None,
+    pedido: Pedido | None,
     nombre_preguntado: bool = False,
-    confirmado: PedidoEnCurso | None = None,
+    confirmado: Pedido | None = None,
 ) -> list[dict[str, Any]]:
     """El parámetro `system`: un solo breakpoint de caché, en el estático (cachea tools + estático)."""
     return [

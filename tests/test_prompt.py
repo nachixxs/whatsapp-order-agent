@@ -1,27 +1,15 @@
 from datetime import date, datetime, timedelta
 
 import pytest
-from pydantic import BaseModel
 
 from app.config import ConfigNegocio
+from app.pedidos import Pedido
 from app.prompt import NOMBRE_SIN_PERFIL, bloque_dinamico, bloque_estatico, bloques_de_sistema
 from app.tools import MATERIAL_A_DEFINIR
+from tests.conftest import TELEFONO
 
-
-class PedidoFalso(BaseModel):
-    """Doble del Pedido de app/pedidos.py: solo lo que lee el prompt."""
-
-    producto: str | None = None
-    material: str | None = None
-    medidas: str | None = None
-    cantidad: int | None = None
-    fecha_necesita: date | None = None
-    tiene_diseno: str | None = None
-    nombre_cliente: str | None = None
-    archivos: list[str] = []
-
-
-COMPLETO = PedidoFalso(
+COMPLETO = Pedido(
+    telefono=TELEFONO,
     producto="sellos",
     material="goma",
     medidas="3x2 cm",
@@ -160,28 +148,43 @@ def test_el_material_a_definir_y_su_marcador(config: ConfigNegocio) -> None:
 def test_sin_pedido(config: ConfigNegocio) -> None:
     """R18: sin pedido, el dinámico lo dice; un pedido sin campos cuenta como ninguno."""
     assert _dinamico(config).endswith("PEDIDO EN CURSO\nNo hay ningún pedido en curso.")
-    assert _dinamico(config, pedido=PedidoFalso()).endswith("PEDIDO EN CURSO\nNo hay ningún pedido en curso.")
+    solo_telefono = Pedido(telefono=TELEFONO)
+    assert _dinamico(config, pedido=solo_telefono).endswith("PEDIDO EN CURSO\nNo hay ningún pedido en curso.")
 
 
 def test_pedido_a_medias_lista_lo_que_falta(config: ConfigNegocio) -> None:
     """R18: el pedido en curso va con lo que dio y lo que falta, en el orden de la repregunta."""
-    pedido = PedidoFalso(producto="sellos", cantidad=3, archivos=["a"])
+    pedido = Pedido(telefono=TELEFONO, producto="sellos", cantidad=3)
     texto = _dinamico(config, pedido=pedido)
     assert "Datos que el cliente ya dio:\n- producto: sellos\n- cantidad: 3\n" in texto
     assert "Todavía falta: material, medidas, fecha_necesita, tiene_diseno, nombre_cliente." in texto
-    assert texto.endswith("Ya mandó el archivo del diseño por WhatsApp.")
     assert "confirmar_pedido` con acepta=true" not in texto
+    # archivos (R29): en la 3.3 vuelve el assert de "Ya mandó el archivo del diseño por WhatsApp."
 
 
 def test_pedido_completo_pide_confirmar(config: ConfigNegocio) -> None:
     """R16: frente al resumen, un 👍 confirma y un "gracias" pelado no; lo dice el prompt."""
-    completo = COMPLETO.model_copy(update={"archivos": ["a", "b"]})
-    texto = _dinamico(config, pedido=completo)
+    texto = _dinamico(config, pedido=COMPLETO)
     assert "- fecha_necesita: 2026-10-09" in texto
     assert "Están todos los datos." in texto
     assert 'Un "sí", un "dale", un "listo, gracias" o un 👍 solo son un sí' in texto
     assert 'Un "gracias" pelado, sin nada más, no confirma' in texto
-    assert texto.endswith("Ya mandó 2 archivos del diseño por WhatsApp.")
+    # archivos (R29): en la 3.3 vuelve el assert de "Ya mandó 2 archivos del diseño por WhatsApp."
+
+
+@pytest.mark.parametrize(
+    "pedido",
+    [Pedido(telefono=TELEFONO, producto="sellos", material=MATERIAL_A_DEFINIR), COMPLETO],
+    ids=["a_medias", "completo"],
+)
+def test_los_dos_bloques_con_el_pedido_real(config: ConfigNegocio, pedido: Pedido) -> None:
+    """R18: los dos bloques se arman con el Pedido de app/pedidos.py; el teléfono no entra al prompt (R13)."""
+    _, dinamico = bloques_de_sistema(
+        config, config.ahora(), nombre_perfil="Ana Prueba", pedido=pedido, confirmado=pedido
+    )
+    for campo, valor in pedido.model_dump(exclude={"telefono"}, exclude_none=True).items():
+        assert f"- {campo}: {valor}" in dinamico["text"]
+    assert TELEFONO not in dinamico["text"]
 
 
 def test_pedido_confirmado_solo_si_lo_hay(config: ConfigNegocio) -> None:
