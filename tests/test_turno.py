@@ -1,5 +1,6 @@
 import itertools
 import logging
+import threading
 from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
@@ -503,3 +504,80 @@ def test_una_charla_de_varios_turnos_llega_al_resumen(memoria: Memoria, config: 
         "[dato_faltante: fecha_necesita]", "[pedido_pendiente_confirmacion]",
     ]
     assert agente.llamadas[3]["pedido"].material == MATERIAL_A_DEFINIR
+
+
+# R28 · un turno a la vez por conversación
+
+
+class _AgenteQueEspera(_Agente):
+    """Se queda en `decidir` hasta que el test lo suelta; cuenta cuántos turnos hay adentro a la vez."""
+
+    def __init__(self, *decisiones: Decision | SinTool | ErrorApi) -> None:
+        super().__init__(*decisiones)
+        self.entro, self.soltar = threading.Semaphore(0), threading.Event()
+        self.adentro = self.maximo = 0
+        self._cuenta = threading.Lock()
+
+    def __call__(self, config: ConfigNegocio, ahora: Any, charla: Charla, **resto: Any) -> Any:
+        with self._cuenta:
+            self.adentro += 1
+            self.maximo = max(self.maximo, self.adentro)
+            decision = super().__call__(config, ahora, charla, **resto)
+        self.entro.release()
+        self.soltar.wait(timeout=5)  # con tope: un test roto no cuelga la suite
+        with self._cuenta:
+            self.adentro -= 1
+        return decision
+
+
+def _en_hilo(
+    hilos: list[threading.Thread], conversacion: int, texto: str, config: ConfigNegocio, memoria: Memoria,
+    agente: _Agente,
+) -> None:
+    mensaje = _mensaje(texto).model_copy(update={"id_conversacion": conversacion})
+    hilo = threading.Thread(target=procesar_lote, args=(conversacion, [mensaje], config, memoria, agente))
+    hilos.append(hilo)
+    hilo.start()
+
+
+def _soltar(agente: _AgenteQueEspera, hilos: list[threading.Thread]) -> None:
+    agente.soltar.set()
+    for hilo in hilos:
+        hilo.join(timeout=5)
+    assert not any(hilo.is_alive() for hilo in hilos)
+
+
+def test_dos_mensajes_de_la_misma_conversacion_van_de_a_uno(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R28, R5: el segundo no entra a decidir hasta que el primero guardó; lee su pedido y no lo pisa."""
+    agente = _AgenteQueEspera(_registrar(producto="sellos"), _registrar(material="goma"))
+    hilos: list[threading.Thread] = []
+    try:
+        _en_hilo(hilos, CONV, "quiero sellos", config, memoria, agente)
+        assert agente.entro.acquire(timeout=5)
+        _en_hilo(hilos, CONV, "de goma", config, memoria, agente)
+        assert not agente.entro.acquire(timeout=0.3)  # sin candado ya estaría adentro
+    finally:
+        _soltar(agente, hilos)
+
+    assert agente.maximo == 1
+    segunda = agente.llamadas[1]
+    assert [m.content for m in segunda["charla"].mensajes] == [
+        "quiero sellos", MARCADOR_REPREGUNTA_MATERIAL, "de goma",
+    ]
+    assert segunda["pedido"] == Pedido(telefono=TELEFONO, producto="sellos")
+    assert _pedido(memoria) == Pedido(telefono=TELEFONO, producto="sellos", material="goma")
+
+
+def test_dos_conversaciones_distintas_deciden_a_la_vez(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R28: el candado es por conversación; la de otro cliente no espera a que termine la primera."""
+    agente = _AgenteQueEspera(HORARIOS, HORARIOS)
+    hilos: list[threading.Thread] = []
+    try:
+        for conversacion in (CONV, CONV + 1):
+            _en_hilo(hilos, conversacion, "hola", config, memoria, agente)
+        assert agente.entro.acquire(timeout=5)
+        assert agente.entro.acquire(timeout=5)
+    finally:
+        _soltar(agente, hilos)
+
+    assert agente.maximo == 2
