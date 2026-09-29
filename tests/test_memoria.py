@@ -2,7 +2,7 @@ import logging
 import sqlite3
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -17,13 +17,17 @@ from app.memoria import (
     Memoria,
     Mensaje,
 )
+from app.pedidos import Pedido
+from tests.conftest import TELEFONO
 
 ZONA = timezone(timedelta(hours=-3))
 T0 = datetime(2026, 9, 28, 10, 0, tzinfo=ZONA)
 UN_SEGUNDO = timedelta(seconds=1)
 CONV = 555
 ID_MENSAJE = 101
-PEDIDO = {"producto": "impresion_digital", "cantidad": "100"}
+PEDIDO = Pedido(
+    telefono=TELEFONO, producto="impresion_digital", cantidad=100, fecha_necesita=date(2026, 10, 9)
+)
 
 
 @pytest.fixture
@@ -233,6 +237,9 @@ def test_cada_apertura_tiene_su_epoca(ruta: Path) -> None:
         "no es json dato-del-cliente",
         '{"mensajes": [{"role": "system", "content": "dato-del-cliente"}], "pedido": null}',
         '{"mensajes": [], "pedido": "dato-del-cliente"}',
+        # R26: un pedido con forma de pedido que el modelo de hoy ya no acepta
+        '{"mensajes": [], "pedido": {"telefono": "dato-del-cliente", "cantidad": 0}}',
+        '{"mensajes": [], "pedido": {"producto": "dato-del-cliente"}}',
     ],
 )
 def test_una_charla_ilegible_se_descarta_sin_loguear_el_valor(
@@ -355,7 +362,7 @@ def test_un_pedido_leido_con_una_generacion_vieja_no_pisa(ruta: Path) -> None:
     memoria = Memoria(ruta)
 
     assert memoria.leer_charla(CONV, T0).generacion == 1
-    assert memoria.guardar_pedido(CONV, {"producto": "sellos"}, 0, T0) is False
+    assert memoria.guardar_pedido(CONV, Pedido(telefono=TELEFONO, producto="sellos"), 0, T0) is False
     assert memoria.leer_charla(CONV, T0).pedido == PEDIDO
     memoria.cerrar()
 

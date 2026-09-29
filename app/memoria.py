@@ -8,9 +8,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError
+
+from app.pedidos import Pedido
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +45,7 @@ class Charla(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     mensajes: list[Mensaje] = []
-    pedido: dict[str, Any] | None = None
+    pedido: Pedido | None = None  # R26: uno que ya no valida descarta la charla al leerla
     generacion: int = 0  # R5: no se guarda con la charla, sale de `generaciones`
 
 
@@ -154,7 +156,7 @@ class Memoria:
             _escribir(con, conversacion, Charla(mensajes=mensajes, pedido=charla.pedido), ahora_s)
 
     def guardar_pedido(
-        self, conversacion: int, pedido: dict[str, Any] | None, generacion: int, ahora: datetime
+        self, conversacion: int, pedido: Pedido | None, generacion: int, ahora: datetime
     ) -> bool:
         """False, sin tocar nada, si la generación cambió desde que se leyó la charla (R5)."""
         ahora_s = _segundos(ahora)
