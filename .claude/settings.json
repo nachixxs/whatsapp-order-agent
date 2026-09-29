@@ -1,0 +1,6 @@
+{
+  "worktree": {
+    "symlinkDirectories": [".venv"],
+    "baseRef": "head"
+  }
+}
