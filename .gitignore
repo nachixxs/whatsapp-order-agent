@@ -9,7 +9,7 @@ config/negocio.json
 *.db-*
 
 # Python
-.venv/
+.venv
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -21,3 +21,6 @@ CLAUDE.local.md
 # Documentos: viven en las notas privadas; el repo versiona solo el README
 *.md
 !README.md
+
+# Payloads capturados del Chatwoot local (tienen datos reales): nunca al repo
+capturas

@@ -1,0 +1,84 @@
+# Chatwoot self-hosted para desarrollo local (CP1, tarea 1.5).
+# Se levanta solo cuando hace falta (tareas "persona" del ROADMAP) y se apaga con
+# `docker compose -f compose.chatwoot.yml down` al terminar: la RAM es compartida con
+# otros proyectos. Una sola instancia en toda la máquina.
+#
+# Secretos en .env.chatwoot (ignorado por .gitignore vía ".env.*"; no se versiona).
+# Ejemplo sin valores reales: chatwoot.env.example.
+#
+# Acceso: http://localhost:3030. FRONTEND_URL va en .env.chatwoot: con WhatsApp Cloud tiene que ser la URL
+# pública del túnel, porque Chatwoot la usa para configurar solo el webhook en Meta.
+
+# Nombre fijo: el proyecto y sus volúmenes son los mismos desde cualquier checkout o worktree.
+name: whatsapp-order-agent-chatwoot
+
+services:
+  rails:
+    image: chatwoot/chatwoot:v4.18.0
+    env_file: .env.chatwoot
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USERNAME=postgres
+      - REDIS_URL=redis://redis:6379
+      # Solo en local: sin esto, SafeFetch bloquea el webhook al bot en host.docker.internal (IP privada).
+      - SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - "127.0.0.1:3030:3000"
+    volumes:
+      - chatwoot_storage:/app/storage
+    entrypoint: docker/entrypoints/rails.sh
+    command: ["bundle", "exec", "rails", "s", "-p", "3000", "-b", "0.0.0.0"]
+    restart: unless-stopped
+    mem_limit: 1536m
+
+  sidekiq:
+    image: chatwoot/chatwoot:v4.18.0
+    env_file: .env.chatwoot
+    environment:
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USERNAME=postgres
+      - REDIS_URL=redis://redis:6379
+      # Solo en local: sin esto, SafeFetch bloquea el webhook al bot en host.docker.internal (IP privada).
+      - SAFE_FETCH_ALLOW_PRIVATE_NETWORK=true
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - chatwoot_storage:/app/storage
+    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+    restart: unless-stopped
+    mem_limit: 1024m
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    env_file: .env.chatwoot
+    environment:
+      - POSTGRES_DB=chatwoot
+      - POSTGRES_USER=postgres
+    volumes:
+      - chatwoot_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    mem_limit: 512m
+
+  redis:
+    image: redis:7.4-alpine
+    env_file: .env.chatwoot
+    command: ["sh", "-c", "redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    volumes:
+      - chatwoot_redis_data:/data
+    restart: unless-stopped
+    mem_limit: 256m
+
+volumes:
+  chatwoot_storage:
+  chatwoot_postgres_data:
+  chatwoot_redis_data:
