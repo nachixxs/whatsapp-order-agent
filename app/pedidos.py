@@ -8,14 +8,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.config import ConfigNegocio
 from app.formato import en_una_linea, para_log
+from app.tools import CAMPOS_DEL_PEDIDO, MATERIAL_A_DEFINIR
 
 logger = logging.getLogger(__name__)
 
-MATERIAL_A_DEFINIR = "a definir con el asesor"  # R15
-# SPECS §6: los que llena el modelo, en el orden de registrar_pedido. Con los siete está completo
-CAMPOS = (
-    "producto", "material", "medidas", "cantidad", "fecha_necesita", "tiene_diseno", "nombre_cliente"
-)
 NO_SON_NOMBRES = frozenset({"cliente", "usuario", "desconocido", "sin nombre", "no especificado"})
 
 Texto = Annotated[str, Field(min_length=1)]
@@ -58,7 +54,8 @@ class Pedido(BaseModel):
         return nombre
 
     def faltantes(self) -> list[str]:
-        return [campo for campo in CAMPOS if getattr(self, campo) is None]
+        # Los que llena el modelo; con los siete está completo
+        return [campo for campo in CAMPOS_DEL_PEDIDO if getattr(self, campo) is None]
 
     @property
     def completo(self) -> bool:
@@ -86,7 +83,7 @@ def sumar_campos(
 def _con_campo(
     pedido: Pedido, campo: str, valor: object, catalogo: set[str], hoy: date
 ) -> Pedido:
-    if campo not in CAMPOS:  # R13: el teléfono no lo llena el modelo
+    if campo not in CAMPOS_DEL_PEDIDO:  # R13: el teléfono no lo llena el modelo
         raise ValueError("campo que no llena el modelo")
     nuevo = Pedido.model_validate(pedido.model_dump() | {campo: valor})
     if campo == "producto" and nuevo.producto not in catalogo:

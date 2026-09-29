@@ -5,7 +5,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.config import ConfigNegocio
-from app.pedidos import CAMPOS, MATERIAL_A_DEFINIR, Pedido, sumar_campos
+from app.pedidos import Pedido, sumar_campos
+from app.tools import CAMPOS_DEL_PEDIDO, MATERIAL_A_DEFINIR
 from tests.conftest import TELEFONO
 
 COMPLETO = {
@@ -27,7 +28,7 @@ def _sumar(
 
 def test_con_los_siete_campos_esta_completo(config: ConfigNegocio) -> None:
     """SPECS §5: sin campos le faltan los siete; con los siete está completo."""
-    assert Pedido(telefono=TELEFONO).faltantes() == list(CAMPOS)
+    assert Pedido(telefono=TELEFONO).faltantes() == list(CAMPOS_DEL_PEDIDO)
     pedido, descartados = _sumar(config, COMPLETO)
     assert descartados == []
     assert pedido.completo and pedido.faltantes() == []
