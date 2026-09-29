@@ -1,13 +1,12 @@
 """System prompt del agente armado desde la config: bloque estático cacheado y bloque dinámico (R17, R18)."""
 
-from collections.abc import Sequence
 from datetime import datetime
-from enum import Enum
 from typing import Any
 
-from app.config import ConfigNegocio, Franja
+from app.config import ConfigNegocio
 from app.formato import DIAS, MESES
 from app.pedidos import Pedido
+from app.respuestas import franjas, listar
 from app.tools import CAMPOS_DEL_PEDIDO, MARCADOR_REPREGUNTA_MATERIAL, MATERIAL_A_DEFINIR
 
 # R43: lo que se pasa de perfil cuando Chatwoot no trae un nombre; el prompt dice que no lo es
@@ -16,29 +15,16 @@ NOMBRE_SIN_PERFIL = "cliente"
 _SEPARADOR_DE_SECCIONES = "\n\n"
 
 
-def _listar(items: Sequence[str]) -> str:
-    if len(items) <= 1:
-        return "".join(items)
-    return f"{', '.join(items[:-1])} o {items[-1]}"
-
-
-def _franjas(franjas: list[Franja]) -> str:
-    textos = [f"{franja.abre:%H:%M} a {franja.cierra:%H:%M}" for franja in franjas]
-    if len(textos) <= 1:
-        return "".join(textos)
-    return f"{', '.join(textos[:-1])} y {textos[-1]}"
-
-
 def _horarios(config: ConfigNegocio) -> str:
     return "\n".join(
-        f"- {nombre}: {_franjas(config.horario.del_dia(dia)) or 'cerrado'}"
+        f"- {nombre}: {franjas(config.horario.del_dia(dia)) or 'cerrado'}"
         for dia, nombre in enumerate(DIAS)
     )
 
 
 def _catalogo(config: ConfigNegocio) -> str:
     return "\n".join(
-        f"- id `{producto.id}`: {producto.familia} — {_listar(producto.ejemplos)}"
+        f"- id `{producto.id}`: {producto.familia} — {listar(producto.ejemplos)}"
         for producto in config.catalogo
     )
 
@@ -54,7 +40,7 @@ DATOS DE LA IMPRENTA
 - Envíos a domicilio: {"sí" if config.hace_envios else "no, se retira por el local"}
 - Estacionamiento: {"sí" if config.tiene_estacionamiento else "no"}
 - Presupuestos: dentro de las {config.plazo_presupuesto_horas} horas hábiles
-- Métodos de pago: {_listar(config.medios_pago)}
+- Métodos de pago: {listar(config.medios_pago)}
 
 CATÁLOGO
 {_catalogo(config)}
@@ -93,13 +79,9 @@ Este cliente ya confirmó un pedido, que quedó tomado y anotado:
 Ese pedido **no se modifica ni se cancela por acá**. Si en este mensaje pide cambiarlo, corregirlo o cancelarlo, o pregunta en qué estado está, llamá a `derivar_a_asesor` con motivo `fuera_de_alcance`. Si en cambio arranca un trabajo nuevo, seguí normal con `registrar_pedido`: ese pedido nuevo **no hereda ningún dato** del confirmado, mandá solo lo que el cliente diga ahora."""
 
 
-def _valor(valor: object) -> str:
-    return str(valor.value) if isinstance(valor, Enum) else str(valor)
-
-
 def _campos_cargados(pedido: Pedido) -> list[str]:
     return [
-        f"- {campo}: {_valor(getattr(pedido, campo))}"
+        f"- {campo}: {getattr(pedido, campo)}"
         for campo in CAMPOS_DEL_PEDIDO
         if getattr(pedido, campo) not in ("", None)
     ]

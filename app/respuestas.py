@@ -53,14 +53,14 @@ _MOTIVO_EN_TEXTO: dict[str, str] = {
 }
 
 
-def _listar(items: Sequence[str], conector: str = "o") -> str:
+def listar(items: Sequence[str], conector: str = "o") -> str:
     if len(items) <= 1:
         return "".join(items)
     return f"{', '.join(items[:-1])} {conector} {items[-1]}"
 
 
-def _franjas(franjas: list[Franja]) -> str:
-    return _listar([f"{franja.abre:%H:%M} a {franja.cierra:%H:%M}" for franja in franjas], "y")
+def franjas(franjas: list[Franja]) -> str:
+    return listar([f"{franja.abre:%H:%M} a {franja.cierra:%H:%M}" for franja in franjas], "y")
 
 
 def fecha_en_palabras(fecha: date) -> str:
@@ -72,7 +72,7 @@ def _dias_agrupados(config: ConfigNegocio) -> list[str]:
     # Días seguidos con el mismo horario van juntos: siete renglones iguales no se leen en un WhatsApp
     grupos: list[tuple[int, int, str]] = []
     for dia in range(7):
-        texto = _franjas(config.horario.del_dia(dia))
+        texto = franjas(config.horario.del_dia(dia))
         if not texto:
             continue
         if grupos and grupos[-1][2] == texto and grupos[-1][1] == dia - 1:
@@ -88,7 +88,7 @@ def _dias_agrupados(config: ConfigNegocio) -> list[str]:
 def _horarios(config: ConfigNegocio) -> str:
     texto = f"Atendemos {'; '.join(_dias_agrupados(config))}."
     cerrados = [DIAS[dia] for dia in range(7) if not config.horario.del_dia(dia)]
-    cerramos = [_listar(cerrados)] if cerrados else []
+    cerramos = [listar(cerrados)] if cerrados else []
     # R39: se nombran si hay alguno cargado, aunque el local abra los siete días
     if config.feriados:
         cerramos.append("feriados y días no laborables")
@@ -98,7 +98,7 @@ def _horarios(config: ConfigNegocio) -> str:
 
 
 def _familias(config: ConfigNegocio) -> str:
-    return _listar([producto.familia for producto in config.catalogo])
+    return listar([producto.familia for producto in config.catalogo])
 
 
 def respuesta_faq(tema: str, config: ConfigNegocio) -> str:
@@ -121,14 +121,14 @@ def respuesta_faq(tema: str, config: ConfigNegocio) -> str:
             f"{config.plazo_presupuesto_horas} horas hábiles."
         )
     if tema == "medios_pago":
-        return f"Podés pagar con {_listar(config.medios_pago)}."
+        return f"Podés pagar con {listar(config.medios_pago)}."
     if tema == "envio_archivos":
         return (
             "Podés mandarme el archivo por acá, como documento, o mandarlo por "
             f"mail a {config.mail_archivos}. Lo que te quede más cómodo."
         )
     if tema == "catalogo":
-        lineas = [f"- {p.familia}: {_listar(p.ejemplos)}." for p in config.catalogo]
+        lineas = [f"- {p.familia}: {listar(p.ejemplos)}." for p in config.catalogo]
         return "Esto es lo que hacemos:\n" + "\n".join(lineas)
     return MENSAJE_NO_ENTENDIDO
 
