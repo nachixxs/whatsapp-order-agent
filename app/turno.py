@@ -1,6 +1,7 @@
 """Un lote de mensajes de texto de una conversación, de punta a punta (SPECS §3, §6 y §7)."""
 
 import logging
+import threading
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
@@ -42,6 +43,10 @@ Decidir = Callable[..., Decision | SinTool | ErrorApi]
 _SIN_TOOL_CON_ESTADO = frozenset({"argumentos_invalidos", "tool_desconocida"})
 _RESUMEN = "pedido_pendiente_confirmacion"
 TOPE_MENSAJE = 4096  # R35: el de WhatsApp; el historial entero vuelve a la API en cada llamada
+# R28: con un solo proceso alcanza un candado en memoria. No se limpia: es un int y un Lock por
+# conversación, y borrar uno que otro hilo está esperando dejaría entrar a dos turnos a la vez
+_candados: dict[int, threading.Lock] = {}
+_guarda = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -67,25 +72,26 @@ def procesar_lote(
     """
     alias = alias_conversacion(conversacion)
     nuevos: list[int] = []
-    try:
-        ahora = config.ahora()  # R37: un solo reloj para todo el lote
-        memoria.barrer(ahora)
-        for mensaje in mensajes:
-            # R23. Sin id no hay compuerta, y sin compuerta no se procesa (R24)
-            if mensaje.id_mensaje is not None and memoria.marcar_procesado(mensaje.id_mensaje, ahora):
-                nuevos.append(mensaje.id_mensaje)
-                memoria.anotar_cliente(conversacion, mensaje.contenido[:TOPE_MENSAJE], ahora)
-        if not nuevos:
-            logger.info("turno: sin mensajes nuevos alias=%s", alias)
-            return None
-        decision, salida = _turno(conversacion, mensajes[-1].contacto, config, memoria, decidir, ahora)
-        if isinstance(decision, ErrorApi) and _reintentable(decision):
+    with _candado(conversacion):  # R28, R5: el mensaje siguiente lee la charla con este turno guardado
+        try:
+            ahora = config.ahora()  # R37: un solo reloj para todo el lote
+            memoria.barrer(ahora)
+            for mensaje in mensajes:
+                # R23. Sin id no hay compuerta, y sin compuerta no se procesa (R24)
+                if mensaje.id_mensaje is not None and memoria.marcar_procesado(mensaje.id_mensaje, ahora):
+                    nuevos.append(mensaje.id_mensaje)
+                    memoria.anotar_cliente(conversacion, mensaje.contenido[:TOPE_MENSAJE], ahora)
+            if not nuevos:
+                logger.info("turno: sin mensajes nuevos alias=%s", alias)
+                return None
+            decision, salida = _turno(conversacion, mensajes[-1].contacto, config, memoria, decidir, ahora)
+            if isinstance(decision, ErrorApi) and _reintentable(decision):
+                _desmarcar(memoria, nuevos)
+        except Exception as error:  # R23, R24: el proceso falló; se desmarca y el cliente recibe el error
+            # Sin marcador: no se sabe en qué quedó la memoria. R52: el tipo, nunca el mensaje del error
+            logger.error("turno: fallo alias=%s error=%s", alias, type(error).__name__)
             _desmarcar(memoria, nuevos)
-    except Exception as error:  # R23, R24: el proceso falló; se desmarca y el cliente recibe el error
-        # Sin marcador: no se sabe en qué quedó la memoria. R52: el tipo, nunca el mensaje del error
-        logger.error("turno: fallo alias=%s error=%s", alias, type(error).__name__)
-        _desmarcar(memoria, nuevos)
-        return MENSAJE_ERROR_INTERNO
+            return MENSAJE_ERROR_INTERNO
     tool = decision.tool if isinstance(decision, Decision) else "-"
     logger.info("turno: alias=%s tool=%s camino=%s", alias, para_log(tool), para_log(salida.camino))
     return salida.texto
@@ -194,3 +200,8 @@ def _desmarcar(memoria: Memoria, ids: list[int]) -> None:
     with suppress(ErrorMemoria):  # la memoria ya dejó en su log la tabla y el tipo de error
         for id_mensaje in ids:
             memoria.desmarcar_procesado(id_mensaje)
+
+
+def _candado(conversacion: int) -> threading.Lock:
+    with _guarda:  # sin la guarda, dos hilos podrían crear cada uno su Lock para la misma conversación
+        return _candados.setdefault(conversacion, threading.Lock())
