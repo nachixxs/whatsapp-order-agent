@@ -24,3 +24,6 @@ CLAUDE.local.md
 
 # Payloads capturados del Chatwoot local (tienen datos reales): nunca al repo
 capturas
+
+# Casos fallados de la batería de ruteo (scripts/medir_ruteo.py)
+.ruteo-fallados.json
