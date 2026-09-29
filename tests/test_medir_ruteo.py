@@ -222,6 +222,14 @@ def test_nombre_solo_sin_pedido_es_nombre_y_frente_al_resumen_no_cancela() -> No
     assert not _acierta("C09", _tool("confirmar_pedido", acepta=False))
 
 
+def test_encargar_sin_decir_que_acepta_registrar_el_nombre_del_perfil() -> None:
+    """R11: Q01 pide el producto o registra el nombre del perfil; inventar el producto es fallo."""
+    assert _acierta("Q01", _tool("pedir_dato_faltante", dato="producto"))
+    assert _acierta("Q01", _registrar(nombre_cliente="Ana Prueba"))
+    assert not _acierta("Q01", _registrar(nombre_cliente="Ana Prueba", producto="impresion_digital"))
+    assert not _acierta("Q01", _registrar(nombre_cliente="Carla"))
+
+
 def test_fecha_relativa_y_campos_con_valor() -> None:
     """R14: la fecha se compara resuelta; con_valor pide que el campo venga, con cualquier valor."""
     assert _acierta("F01", _registrar(fecha_necesita="2026-10-09"))

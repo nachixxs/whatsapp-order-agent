@@ -135,7 +135,11 @@
       "id": "Q01", "camino": "pedir_dato_faltante", "reglas": ["R11"],
       "descripcion": "Quiere encargar algo sin decir qué",
       "mensaje": "hola, quiero encargar un trabajo",
-      "esperado": [{"tool": "pedir_dato_faltante", "argumentos": {"dato": "producto"}}]
+      "esperado": [
+        {"tool": "pedir_dato_faltante", "argumentos": {"dato": "producto"}},
+        {"tool": "registrar_pedido", "argumentos": {"nombre_cliente": "Ana Prueba", "producto": null}}
+      ],
+      "por_que": "Con el nombre del perfil registrado, el turno repregunta el primer dato que falta, que es el producto: el cliente recibe el mismo '¿Qué necesitás?'. Y el prompt pide mandar el nombre del perfil en registrar_pedido. Fallo es inventar el producto."
     },
     {
       "id": "Q02", "camino": "pedir_dato_faltante", "reglas": ["R21"],
