@@ -3,6 +3,7 @@ import hmac
 import json
 import logging
 import socket
+from pathlib import Path
 
 import httpx
 import pytest
@@ -10,7 +11,8 @@ from fastapi.testclient import TestClient
 
 from app.chatwoot import ClienteChatwoot
 from app.config import ConfigNegocio
-from app.main import app, get_cliente_chatwoot, get_config
+from app.main import app, get_cliente_chatwoot, get_config, get_memoria, workers_pedidos
+from app.memoria import Memoria
 from tests.conftest import _payload
 
 SECRETO = "secreto-de-prueba"
@@ -41,10 +43,38 @@ def cliente_falso() -> ClienteFalso:
     app.dependency_overrides.pop(get_cliente_chatwoot, None)
 
 
+class TurnoFalso:
+    """Reemplaza a procesar_lote: anota los llamados y devuelve `texto` (sin API ni SQLite)."""
+
+    def __init__(self) -> None:
+        self.llamados: list[tuple[int, list[object], object, object]] = []
+        self.texto: str | None = "respuesta del turno"
+
+    def __call__(self, conversacion: int, mensajes: object, config: object, memoria: object) -> str | None:
+        self.llamados.append((conversacion, list(mensajes), config, memoria))  # type: ignore[call-overload]
+        return self.texto
+
+
 @pytest.fixture
-def client(config: ConfigNegocio) -> TestClient:
+def turno_falso(monkeypatch: pytest.MonkeyPatch) -> TurnoFalso:
+    falso = TurnoFalso()
+    monkeypatch.setattr("app.main.procesar_lote", falso)
+    return falso
+
+
+@pytest.fixture
+def memoria(tmp_path: Path) -> Memoria:
+    memoria = Memoria(tmp_path / "memoria.db")
+    app.dependency_overrides[get_memoria] = lambda: memoria
+    yield memoria
+    app.dependency_overrides.pop(get_memoria, None)
+    memoria.cerrar()
+
+
+@pytest.fixture
+def client(config: ConfigNegocio, memoria: Memoria, turno_falso: TurnoFalso) -> TestClient:
     app.dependency_overrides[get_config] = lambda: config
-    yield TestClient(app)
+    yield TestClient(app)  # sin `with`: no corre el lifespan (no toca disco ni el entorno)
     app.dependency_overrides.pop(get_config, None)
 
 
@@ -67,15 +97,18 @@ def _post(
 
 
 def test_webhook_secreto_correcto_procesa(
-    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+    client: TestClient,
+    config: ConfigNegocio,
+    monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso,
+    turno_falso: TurnoFalso,
 ) -> None:
     """R49: con el secreto correcto y account/inbox esperados, el webhook procesa."""
     _configurar_entorno(monkeypatch)
-    respuesta = _post(client, config, json.dumps(_payload()).encode()
-    )
+    respuesta = _post(client, config, json.dumps(_payload()).encode())
     assert respuesta.status_code == 200
     assert respuesta.json() == {"estado": "ok"}
-    assert cliente_falso.respuestas == [(555, "Eco: hola, quiero tarjetas")]
+    assert len(turno_falso.llamados) == 1
 
 
 def test_webhook_account_equivocada_se_descarta(
@@ -117,7 +150,7 @@ def test_webhook_r48_se_descarta_sin_eco(
     cliente_falso: ClienteFalso,
     cambios: dict[str, object],
 ) -> None:
-    """R48: outgoing, nota privada y otro evento nunca generan un eco."""
+    """R48: outgoing, nota privada y otro evento nunca generan una respuesta."""
     _configurar_entorno(monkeypatch)
     payload = _payload(**cambios)
     respuesta = _post(client, config, json.dumps(payload).encode()
@@ -151,25 +184,130 @@ def test_webhook_r51_payload_roto_siempre_200_sin_eco(
     assert cliente_falso.respuestas == []
 
 
-def test_webhook_eco_de_adjuntos(
-    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+def test_webhook_mensaje_llega_al_turno_y_su_texto_se_responde(
+    client: TestClient,
+    config: ConfigNegocio,
+    memoria: Memoria,
+    monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso,
+    turno_falso: TurnoFalso,
 ) -> None:
-    """Un mensaje solo con adjuntos contesta 'Eco: recibi N archivo(s)'."""
+    """R47 a R49: un mensaje valido llega a procesar_lote con conversacion, lote de uno, config y memoria."""
+    _configurar_entorno(monkeypatch)
+    respuesta = _post(client, config, json.dumps(_payload()).encode())
+    assert respuesta.json() == {"estado": "ok"}
+    [(conversacion, mensajes, config_usada, memoria_usada)] = turno_falso.llamados
+    assert conversacion == 555
+    assert [(m.id_mensaje, m.contenido) for m in mensajes] == [(101, "hola, quiero tarjetas")]  # type: ignore[attr-defined]
+    assert config_usada is config
+    assert memoria_usada is memoria
+    assert cliente_falso.respuestas == [(555, "respuesta del turno")]
+
+
+def test_webhook_turno_sin_texto_no_manda_nada(
+    client: TestClient,
+    config: ConfigNegocio,
+    monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso,
+    turno_falso: TurnoFalso,
+) -> None:
+    """Si procesar_lote devuelve None (duplicado, compuerta), no se le escribe al cliente."""
+    _configurar_entorno(monkeypatch)
+    turno_falso.texto = None
+    assert _post(client, config, json.dumps(_payload()).encode()).status_code == 200
+    assert len(turno_falso.llamados) == 1
+    assert cliente_falso.respuestas == []
+
+
+def test_webhook_firma_mala_no_llega_al_turno(
+    client: TestClient,
+    config: ConfigNegocio,
+    monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso,
+    turno_falso: TurnoFalso,
+) -> None:
+    """R49: con la firma mala, procesar_lote no se llama (no se escribe memoria ni se gasta API)."""
+    _configurar_entorno(monkeypatch)
+    respuesta = _post(client, config, json.dumps(_payload()).encode(), secreto="otro-secreto")
+    assert respuesta.json() == {"estado": "ignorado"}
+    assert turno_falso.llamados == []
+    assert cliente_falso.respuestas == []
+
+
+def test_webhook_adjuntos_sin_texto_no_van_al_turno(
+    client: TestClient,
+    config: ConfigNegocio,
+    monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso,
+    turno_falso: TurnoFalso,
+) -> None:
+    """Hasta la tarea 3.3, un mensaje de solo adjuntos no entra al turno ni recibe respuesta."""
     _configurar_entorno(monkeypatch)
     payload = _payload(content="", attachments=[{"id": 1}, {"id": 2}])
-    _post(client, config, json.dumps(payload).encode())
-    assert cliente_falso.respuestas == [(555, "Eco: recibí 2 archivo(s)")]
+    assert _post(client, config, json.dumps(payload).encode()).status_code == 200
+    assert turno_falso.llamados == []
+    assert cliente_falso.respuestas == []
 
 
-def test_webhook_eco_se_corta_a_4096_caracteres(
-    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+def test_webhook_falla_al_responder_se_loguea_sin_valores_y_da_200(
+    client: TestClient,
+    config: ConfigNegocio,
+    monkeypatch: pytest.MonkeyPatch,
+    turno_falso: TurnoFalso,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """R35: ningun mensaje de eco supera los 4.096 caracteres."""
+    """R52 y R50: un error de responder no tumba el webhook y el log lleva el tipo, no el mensaje."""
+
+    class ClienteRoto(ClienteChatwoot):
+        def responder(self, id_conversacion: int, texto: str) -> None:
+            raise httpx.ConnectError("http://chatwoot.local/conversations/555 token-secreto")
+
+    app.dependency_overrides[get_cliente_chatwoot] = lambda: ClienteRoto()
     _configurar_entorno(monkeypatch)
-    payload = _payload(content="a" * 5_000)
-    _post(client, config, json.dumps(payload).encode())
-    assert len(cliente_falso.respuestas) == 1
-    assert len(cliente_falso.respuestas[0][1]) == 4_096
+    try:
+        with caplog.at_level(logging.INFO):
+            respuesta = _post(client, config, json.dumps(_payload()).encode())
+    finally:
+        app.dependency_overrides.pop(get_cliente_chatwoot, None)
+    assert respuesta.status_code == 200
+    texto = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("app."))
+    assert "ConnectError" in texto
+    assert "token-secreto" not in texto
+    assert "555" not in texto
+
+
+@pytest.mark.parametrize(
+    ("argv", "entorno", "esperado"),
+    [
+        (["uvicorn", "app.main:app"], {}, 1),
+        (["uvicorn", "app.main:app", "--workers", "3"], {}, 3),
+        (["uvicorn", "app.main:app", "--workers=2"], {}, 2),
+        (["gunicorn", "-w", "4", "app.main:app"], {}, 4),
+        (["uvicorn", "app.main:app"], {"WEB_CONCURRENCY": "2"}, 2),
+        (["uvicorn", "app.main:app", "--workers", "1"], {"WEB_CONCURRENCY": "5"}, 1),  # la CLI le gana
+        (["uvicorn", "app.main:app"], {"WEB_CONCURRENCY": ""}, 1),
+    ],
+)
+def test_workers_pedidos(argv: list[str], entorno: dict[str, str], esperado: int) -> None:
+    """R28: se lee la cantidad de workers de la linea de comandos y de WEB_CONCURRENCY."""
+    assert workers_pedidos(argv, entorno) == esperado
+
+
+def test_r28_con_mas_de_un_worker_el_servidor_no_arranca(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config: ConfigNegocio
+) -> None:
+    """R28: el lifespan aborta con mas de un worker y no abre la memoria; con uno, arranca y cierra."""
+    monkeypatch.setattr("sys.argv", ["uvicorn", "app.main:app"])
+    # negocio.json real esta en .gitignore: el CI solo tiene el ejemplo
+    monkeypatch.setattr("app.main.RUTA_POR_DEFECTO", Path(__file__).resolve().parent.parent / "config" / "negocio.ejemplo.json")
+    monkeypatch.setenv("MEMORIA_RUTA", str(tmp_path / "m.db"))
+    monkeypatch.setenv("WEB_CONCURRENCY", "2")
+    with pytest.raises(RuntimeError, match="R28"), TestClient(app):
+        pass
+    assert not (tmp_path / "m.db").exists()
+    monkeypatch.setenv("WEB_CONCURRENCY", "1")
+    with TestClient(app):
+        assert (tmp_path / "m.db").exists()  # R54: la memoria se abre al arrancar
 
 
 def test_webhook_body_gigante_se_corta_sin_provocar_reintento(
@@ -318,7 +456,7 @@ def test_webhook_firma_buena_procesa(
     _configurar_entorno(monkeypatch)
     respuesta = _post(client, config, json.dumps(_payload()).encode(), desfase=-300)
     assert respuesta.json() == {"estado": "ok"}
-    assert cliente_falso.respuestas == [(555, "Eco: hola, quiero tarjetas")]
+    assert cliente_falso.respuestas == [(555, "respuesta del turno")]
 
 
 def test_webhook_sin_firma_no_procesa(
