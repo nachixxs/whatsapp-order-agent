@@ -12,6 +12,8 @@ from app.respuestas import (
     MENSAJE_ERROR_INTERNO,
     MENSAJE_NO_ENTENDIDO,
     MENSAJE_PEDIDO_RECHAZADO,
+    aviso_de_descartados,
+    con_aviso_de_material,
     fecha_en_palabras,
     pregunta_por_dato,
     respuesta_faq,
@@ -64,6 +66,12 @@ def _todos_los_textos(config: ConfigNegocio) -> list[str]:
         *(resumen_pedido(_pedido(tiene_diseno=estado), config) for estado in ESTADOS_DISENO),
         resumen_pedido(_pedido(material=MATERIAL_A_DEFINIR), config),
         *(texto_derivacion(motivo, config) for motivo in MOTIVOS_DERIVACION),
+        *filter(None, (
+            aviso_de_descartados([campo], _pedido(**{campo: None}), config)
+            for campo in CAMPOS_DEL_PEDIDO
+        )),
+        con_aviso_de_material(pregunta_por_dato("medidas", config), es_resumen=False),
+        con_aviso_de_material(resumen_pedido(_pedido(material=MATERIAL_A_DEFINIR), config), es_resumen=True),
     ]
 
 
@@ -182,6 +190,71 @@ def test_repregunta_del_material_ofrece_dejarlo_a_definir(config: ConfigNegocio)
 def test_dato_fuera_del_enum_es_no_entendido(config: ConfigNegocio) -> None:
     """R13: el teléfono no es un dato que se repregunte."""
     assert pregunta_por_dato("telefono", config) == MENSAJE_NO_ENTENDIDO
+
+
+# Campos descartados y aviso de material
+
+
+def test_producto_fuera_del_catalogo_lista_las_familias(config: ConfigNegocio) -> None:
+    """R14: el producto descartado se avisa con el catálogo y se repregunta en el mismo texto."""
+    assert aviso_de_descartados(["producto"], _pedido(producto=None), config) == (
+        "Eso no lo tengo en la lista. Hacemos Impresión digital, Gran formato, Rotulación, Sellos o "
+        "Acabados. ¿Cuál de esos necesitás?"
+    )
+
+
+def test_producto_fuera_del_catalogo_se_avisa_aunque_el_pedido_tenga_otro(config: ConfigNegocio) -> None:
+    """R14: el cliente pidió algo que no está; callarlo dejaría el pedido con el producto anterior."""
+    assert aviso_de_descartados(["producto"], _pedido(), config) is not None
+
+
+def test_fecha_pasada_se_repregunta(config: ConfigNegocio) -> None:
+    """R14: la fecha pasada se descarta y se repregunta."""
+    assert aviso_de_descartados(["fecha_necesita"], _pedido(fecha_necesita=None), config) == (
+        "Esa fecha ya pasó, así que algo entendí mal. ¿Para qué día lo necesitás?"
+    )
+
+
+def test_fecha_pasada_con_una_valida_de_antes_sigue_la_charla(config: ConfigNegocio) -> None:
+    """R14: si el pedido conserva una fecha válida, el reenvío vencido no se repregunta."""
+    assert aviso_de_descartados(["fecha_necesita"], _pedido(), config) is None
+
+
+def test_producto_gana_sobre_la_fecha(config: ConfigNegocio) -> None:
+    """R14: con dos descartados sale un solo aviso, el del producto."""
+    descartados = ["fecha_necesita", "producto"]
+    pedido = _pedido(producto=None, fecha_necesita=None)
+    assert aviso_de_descartados(descartados, pedido, config) == aviso_de_descartados(
+        ["producto"], pedido, config
+    )
+
+
+@pytest.mark.parametrize("descartados", [[], ["nombre_cliente"], ["cantidad"], ["telefono"]])
+def test_sin_aviso_sigue_el_flujo_normal(descartados: list[str], config: ConfigNegocio) -> None:
+    """R14: el nombre descartado no se avisa; el pedido queda sin él y la repregunta normal lo pide."""
+    assert aviso_de_descartados(descartados, _pedido(nombre_cliente=None), config) is None
+
+
+def test_aviso_de_material_antes_de_la_repregunta_con_un_espacio() -> None:
+    """R15: el aviso va delante de la repregunta, separado por un espacio."""
+    assert con_aviso_de_material("¿Qué medidas necesitás?", es_resumen=False) == (
+        "El material lo confirma un asesor cuando cotiza, así que lo dejamos a definir. "
+        "¿Qué medidas necesitás?"
+    )
+
+
+def test_aviso_de_material_antes_del_resumen_con_una_linea_en_blanco(config: ConfigNegocio) -> None:
+    """R15: el aviso va delante del resumen, separado por una línea en blanco."""
+    resumen = resumen_pedido(_pedido(material=MATERIAL_A_DEFINIR), config)
+    assert con_aviso_de_material(resumen, es_resumen=True) == f"{AVISO_MATERIAL_A_DEFINIR}\n\n{resumen}"
+
+
+def test_los_avisos_de_descartados_no_ofrecen_alternativas_de_material(config: ConfigNegocio) -> None:
+    """R15: ningún aviso de R14 nombra un material ni ofrece uno en su lugar."""
+    for campo in ("producto", "fecha_necesita"):
+        texto = aviso_de_descartados([campo], _pedido(**{campo: None}), config) or ""
+        for ofrecimiento in ("material", "otro", "otra", "alternativ", "en su lugar", "en cambio"):
+            assert ofrecimiento not in texto.casefold()
 
 
 # Resumen
