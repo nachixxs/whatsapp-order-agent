@@ -174,9 +174,6 @@ def errores_contra_tools(dorado: SetDorado, tools: list[dict[str, Any]]) -> list
     return errores
 
 
-# ── Puntuación ───────────────────────────────────────────────────────────
-
-
 def _normalizar(valor: object) -> object:
     if isinstance(valor, date):
         return valor.isoformat()
@@ -231,9 +228,6 @@ def puntuar(dorado: SetDorado, caso: Caso, respuesta: Message) -> Puntaje:
     pedido = dorado.pedido(caso.pedido)
     acierto = any(_coincide(opcion, resultado.tool, argumentos, pedido) for opcion in caso.esperado)
     return Puntaje(acierto, _describir(resultado.tool, argumentos))
-
-
-# ── Costo ────────────────────────────────────────────────────────────────
 
 
 def costo(entrada: int, cache_escrita: int, cache_leida: int, salida: int) -> float:
@@ -296,9 +290,6 @@ def imprimir_estimacion(estimacion: Estimacion, casos: int, corridas: int) -> No
         f"US$ {estimacion.con_cache:.4f}"
     )
     print(f"Techo con Batch y sin caché (en un lote la caché es best-effort): US$ {estimacion.sin_cache:.4f}")
-
-
-# ── Lote ─────────────────────────────────────────────────────────────────
 
 
 def custom_id(caso: str, corrida: int) -> str:
