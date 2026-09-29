@@ -1,0 +1,591 @@
+{
+  "ahora_por_defecto": "2026-10-06T10:00:00-03:00",
+  "perfil_por_defecto": "Ana Prueba",
+  "pedidos": {
+    "completo": {
+      "nombre_cliente": "Ana Prueba", "producto": "impresion_digital", "material": "cartulina 300g",
+      "medidas": "9x5 cm", "cantidad": 500, "tiene_diseno": "si", "fecha_necesita": "2026-10-16"
+    },
+    "lonas_sin_material": {
+      "nombre_cliente": "Ana Prueba", "producto": "gran_formato", "medidas": "2x1 m", "cantidad": 3
+    },
+    "lonas_con_lona": {
+      "nombre_cliente": "Ana Prueba", "producto": "gran_formato", "material": "lona", "medidas": "2x1 m",
+      "cantidad": 3
+    },
+    "stickers_sin_medidas": {
+      "nombre_cliente": "Ana Prueba", "producto": "rotulacion", "material": "vinilo", "cantidad": 200
+    },
+    "tarjetas_sin_diseno": {
+      "nombre_cliente": "Ana Prueba", "producto": "impresion_digital", "material": "cartulina 300g",
+      "medidas": "9x5 cm", "cantidad": 500, "fecha_necesita": "2026-10-16"
+    },
+    "volantes_sin_fecha": {
+      "nombre_cliente": "Ana Prueba", "producto": "impresion_digital", "material": "obra 90g",
+      "medidas": "A5", "cantidad": 1000, "tiene_diseno": "si"
+    }
+  },
+  "casos": [
+    {
+      "id": "P01", "camino": "registrar_pedido", "reglas": ["R11"],
+      "descripcion": "Primer mensaje con producto y cantidad",
+      "mensaje": "hola! necesito 500 tarjetas personales",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"producto": "impresion_digital", "cantidad": 500}}]
+    },
+    {
+      "id": "P02", "camino": "registrar_pedido", "reglas": ["R11"],
+      "descripcion": "Gran formato con medidas y cantidad",
+      "mensaje": "quiero 3 banners de 2x1 metros para la vidriera",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"producto": "gran_formato", "cantidad": 3}, "con_valor": ["medidas"]}]
+    },
+    {
+      "id": "P03", "camino": "registrar_pedido", "reglas": ["R11"],
+      "descripcion": "Sellos: otra familia del catálogo",
+      "mensaje": "necesito 2 sellos automáticos con el logo del negocio",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"producto": "sellos", "cantidad": 2}}]
+    },
+    {
+      "id": "P04", "camino": "registrar_pedido", "reglas": ["R21"],
+      "descripcion": "Contesta la repregunta de las medidas: registra, no repregunta",
+      "pedido": "stickers_sin_medidas",
+      "historial": [
+        {"role": "user", "content": "quiero 200 stickers en vinilo"},
+        {"role": "assistant", "content": "[dato_faltante: medidas]"}
+      ],
+      "mensaje": "de 5x5 cm",
+      "esperado": [{"tool": "registrar_pedido", "con_valor": ["medidas"]}]
+    },
+    {
+      "id": "P05", "camino": "registrar_pedido", "reglas": ["R21"],
+      "descripcion": "Diseño: ya lo tiene (si)",
+      "pedido": "tarjetas_sin_diseno",
+      "historial": [
+        {"role": "user", "content": "necesito 500 tarjetas de 9x5 en cartulina 300g para el viernes 16"},
+        {"role": "assistant", "content": "[dato_faltante: tiene_diseno]"}
+      ],
+      "mensaje": "el diseño ya lo tengo hecho",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"tiene_diseno": "si"}}]
+    },
+    {
+      "id": "P06", "camino": "registrar_pedido", "reglas": ["R21"],
+      "descripcion": "Diseño: quiere que lo haga la imprenta (requiere_servicio no deriva, SPECS §6)",
+      "pedido": "tarjetas_sin_diseno",
+      "historial": [
+        {"role": "user", "content": "necesito 500 tarjetas de 9x5 en cartulina 300g para el viernes 16"},
+        {"role": "assistant", "content": "[dato_faltante: tiene_diseno]"}
+      ],
+      "mensaje": "no tengo diseño, ¿me lo pueden hacer ustedes?",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"tiene_diseno": "requiere_servicio"}}]
+    },
+    {
+      "id": "P07", "camino": "registrar_pedido", "reglas": ["R21"],
+      "descripcion": "Diseño: no lo tiene pero lo consigue por su cuenta (no)",
+      "pedido": "tarjetas_sin_diseno",
+      "historial": [
+        {"role": "user", "content": "necesito 500 tarjetas de 9x5 en cartulina 300g para el viernes 16"},
+        {"role": "assistant", "content": "[dato_faltante: tiene_diseno]"}
+      ],
+      "mensaje": "todavía no, me lo está haciendo una diseñadora",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"tiene_diseno": "no"}}]
+    },
+    {
+      "id": "F01", "camino": "registrar_pedido", "reglas": ["R14", "R37"],
+      "descripcion": "Fecha relativa: 'el viernes' desde el martes 6 es el 9",
+      "pedido": "volantes_sin_fecha",
+      "historial": [
+        {"role": "user", "content": "necesito 1000 volantes A5 en obra 90g, el diseño lo tengo"},
+        {"role": "assistant", "content": "[dato_faltante: fecha_necesita]"}
+      ],
+      "mensaje": "los necesito para el viernes",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"fecha_necesita": "2026-10-09"}}]
+    },
+    {
+      "id": "F02", "camino": "registrar_pedido", "reglas": ["R14", "R37"],
+      "descripcion": "Fecha relativa: 'mañana' desde el martes 6 es el 7",
+      "pedido": "volantes_sin_fecha",
+      "historial": [
+        {"role": "user", "content": "necesito 1000 volantes A5 en obra 90g, el diseño lo tengo"},
+        {"role": "assistant", "content": "[dato_faltante: fecha_necesita]"}
+      ],
+      "mensaje": "para mañana",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"fecha_necesita": "2026-10-07"}}]
+    },
+    {
+      "id": "H01", "camino": "consulta_general", "reglas": ["R39"],
+      "descripcion": "Feriado (lunes 12): pregunta si abren hoy; es horarios, no una derivación",
+      "ahora": "2026-10-12T11:00:00-03:00",
+      "mensaje": "¿hoy abren?",
+      "esperado": [{"tool": "consulta_general", "argumentos": {"tema": "horarios"}}]
+    },
+    {
+      "id": "H02", "camino": "registrar_pedido", "reglas": ["R37", "R39"],
+      "descripcion": "Feriado (lunes 12): 'para mañana' es el 13, el feriado no corre la fecha",
+      "ahora": "2026-10-12T11:00:00-03:00",
+      "mensaje": "necesito 100 volantes para mañana",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"producto": "impresion_digital", "cantidad": 100, "fecha_necesita": "2026-10-13"}}]
+    },
+    {
+      "id": "H03", "camino": "derivar_a_asesor", "reglas": ["R38", "R39"],
+      "descripcion": "Feriado: pedir una persona sigue siendo derivar; el cuándo lo dice el texto fijo",
+      "ahora": "2026-10-12T11:00:00-03:00",
+      "mensaje": "quiero hablar con alguien del local",
+      "esperado": [{"tool": "derivar_a_asesor", "argumentos": {"motivo": "lo_pide_el_cliente"}}]
+    },
+    {
+      "id": "Q01", "camino": "pedir_dato_faltante", "reglas": ["R11"],
+      "descripcion": "Quiere encargar algo sin decir qué",
+      "mensaje": "hola, quiero encargar un trabajo",
+      "esperado": [
+        {"tool": "pedir_dato_faltante", "argumentos": {"dato": "producto"}},
+        {"tool": "registrar_pedido", "argumentos": {"nombre_cliente": "Ana Prueba", "producto": null}}
+      ],
+      "por_que": "Con el nombre del perfil registrado, el turno repregunta el primer dato que falta, que es el producto: el cliente recibe el mismo '¿Qué necesitás?'. Y el prompt pide mandar el nombre del perfil en registrar_pedido. Fallo es inventar el producto."
+    },
+    {
+      "id": "Q02", "camino": "pedir_dato_faltante", "reglas": ["R21"],
+      "descripcion": "Pregunta qué falta sin dar un dato nuevo; falta solo la fecha",
+      "pedido": "volantes_sin_fecha",
+      "historial": [
+        {"role": "user", "content": "necesito 1000 volantes A5 en obra 90g, el diseño lo tengo"},
+        {"role": "assistant", "content": "[dato_faltante: fecha_necesita]"}
+      ],
+      "mensaje": "¿qué más te hace falta?",
+      "esperado": [{"tool": "pedir_dato_faltante", "argumentos": {"dato": "fecha_necesita"}}]
+    },
+    {
+      "id": "Q03", "camino": "registrar_pedido", "reglas": ["R14", "R43"],
+      "descripcion": "Perfil que no es un nombre (emoji): registra el pedido sin nombre_cliente",
+      "nombre_perfil": "🌸",
+      "mensaje": "necesito 100 tarjetas",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"producto": "impresion_digital", "cantidad": 100, "nombre_cliente": null}}]
+    },
+    {
+      "id": "G01", "camino": "consulta_general", "reglas": ["R11"],
+      "descripcion": "FAQ: dirección",
+      "mensaje": "¿dónde queda el local?",
+      "esperado": [{"tool": "consulta_general", "argumentos": {"tema": "direccion"}}]
+    },
+    {
+      "id": "G02", "camino": "consulta_general", "reglas": ["R11"],
+      "descripcion": "FAQ: horarios",
+      "mensaje": "¿hasta qué hora abren los sábados?",
+      "esperado": [{"tool": "consulta_general", "argumentos": {"tema": "horarios"}}]
+    },
+    {
+      "id": "G03", "camino": "consulta_general", "reglas": ["R11"],
+      "descripcion": "FAQ: envíos",
+      "mensaje": "¿hacen envíos a domicilio?",
+      "esperado": [{"tool": "consulta_general", "argumentos": {"tema": "envios"}}]
+    },
+    {
+      "id": "G04", "camino": "consulta_general", "reglas": ["R11"],
+      "descripcion": "FAQ: estacionamiento",
+      "mensaje": "voy en auto, ¿hay dónde estacionar?",
+      "esperado": [{"tool": "consulta_general", "argumentos": {"tema": "estacionamiento"}}]
+    },
+    {
+      "id": "G05", "camino": "consulta_general", "reglas": ["R11", "R19"],
+      "descripcion": "FAQ: cuánto tarda el presupuesto (no cuánto sale): el borde con plazo_o_precio",
+      "mensaje": "si les mando el diseño, ¿en cuánto tiempo me pasan el presupuesto?",
+      "esperado": [{"tool": "consulta_general", "argumentos": {"tema": "presupuestos"}}]
+    },
+    {
+      "id": "G06", "camino": "consulta_general", "reglas": ["R11"],
+      "descripcion": "FAQ: medios de pago",
+      "mensaje": "¿aceptan transferencia?",
+      "esperado": [{"tool": "consulta_general", "argumentos": {"tema": "medios_pago"}}]
+    },
+    {
+      "id": "G07", "camino": "consulta_general", "reglas": ["R11"],
+      "descripcion": "FAQ: cómo mandar el archivo",
+      "mensaje": "¿cómo les mando el archivo del diseño?",
+      "esperado": [{"tool": "consulta_general", "argumentos": {"tema": "envio_archivos"}}]
+    },
+    {
+      "id": "G08", "camino": "consulta_general", "reglas": ["R11"],
+      "descripcion": "FAQ: catálogo",
+      "mensaje": "¿qué cosas imprimen?",
+      "esperado": [{"tool": "consulta_general", "argumentos": {"tema": "catalogo"}}]
+    },
+    {
+      "id": "G09", "camino": "consulta_general", "reglas": ["R11", "R21"],
+      "descripcion": "FAQ con historial profundo: cuatro consultas ya contestadas antes",
+      "historial": [
+        {"role": "user", "content": "¿dónde queda el local?"},
+        {"role": "assistant", "content": "[consulta_general: direccion]"},
+        {"role": "user", "content": "¿abren los sábados?"},
+        {"role": "assistant", "content": "[consulta_general: horarios]"},
+        {"role": "user", "content": "¿hacen envíos?"},
+        {"role": "assistant", "content": "[consulta_general: envios]"},
+        {"role": "user", "content": "¿hay estacionamiento?"},
+        {"role": "assistant", "content": "[consulta_general: estacionamiento]"}
+      ],
+      "mensaje": "¿y cómo se puede pagar?",
+      "esperado": [{"tool": "consulta_general", "argumentos": {"tema": "medios_pago"}}]
+    },
+    {
+      "id": "A01", "camino": "derivar_a_asesor", "reglas": ["R15"],
+      "descripcion": "Falta de stock sin pedido en curso: deriva, no ofrece alternativas",
+      "mensaje": "me dijeron que no les queda vinilo mate, ¿tienen?",
+      "esperado": [{"tool": "derivar_a_asesor", "argumentos": {"motivo": "sin_stock"}}]
+    },
+    {
+      "id": "A02", "camino": "derivar_a_asesor", "reglas": ["R11"],
+      "descripcion": "Pide hablar con una persona",
+      "mensaje": "¿puedo hablar con una persona?",
+      "esperado": [{"tool": "derivar_a_asesor", "argumentos": {"motivo": "lo_pide_el_cliente"}}]
+    },
+    {
+      "id": "A03", "camino": "derivar_a_asesor", "reglas": ["R11"],
+      "descripcion": "Consulta fuera de los temas del FAQ",
+      "mensaje": "¿me hacen factura A a nombre de mi empresa?",
+      "esperado": [{"tool": "derivar_a_asesor", "argumentos": {"motivo": "fuera_de_alcance"}}]
+    },
+    {
+      "id": "A04", "camino": "derivar_a_asesor", "reglas": ["R19"],
+      "descripcion": "Precio: deriva, nunca da un número",
+      "mensaje": "¿cuánto salen 1000 volantes?",
+      "esperado": [{"tool": "derivar_a_asesor", "argumentos": {"motivo": "plazo_o_precio"}}]
+    },
+    {
+      "id": "A05", "camino": "derivar_a_asesor", "reglas": ["R19"],
+      "descripcion": "Plazo de entrega en medio de la repregunta de la fecha: deriva, no registra",
+      "pedido": "volantes_sin_fecha",
+      "historial": [
+        {"role": "user", "content": "necesito 1000 volantes A5 en obra 90g, el diseño lo tengo"},
+        {"role": "assistant", "content": "[dato_faltante: fecha_necesita]"}
+      ],
+      "mensaje": "¿para cuándo me los podrían tener?",
+      "esperado": [{"tool": "derivar_a_asesor", "argumentos": {"motivo": "plazo_o_precio"}}]
+    },
+    {
+      "id": "A06", "camino": "derivar_a_asesor", "reglas": ["R19"],
+      "descripcion": "Seña: la define el asesor",
+      "mensaje": "¿cuánto tengo que dejar de seña?",
+      "esperado": [
+        {"tool": "derivar_a_asesor", "argumentos": {"motivo": "plazo_o_precio"}},
+        {"tool": "derivar_a_asesor", "argumentos": {"motivo": "fuera_de_alcance"}}
+      ],
+      "por_que": "La seña no tiene motivo propio en el enum: es plata (plazo_o_precio) o una duda que el bot no resuelve (fuera_de_alcance). Las dos derivan y ninguna define la seña, que es lo que la regla dura cuida."
+    },
+    {
+      "id": "A07", "camino": "derivar_a_asesor", "reglas": ["R19"],
+      "descripcion": "Precio frente al resumen: deriva, no confirma",
+      "pedido": "completo",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 500 tarjetas de 9x5 en cartulina 300g, el diseño ya lo tengo, las necesito para el viernes 16"},
+        {"role": "assistant", "content": "[pedido_pendiente_confirmacion]"}
+      ],
+      "mensaje": "antes de confirmar, ¿cuánto me sale todo?",
+      "esperado": [{"tool": "derivar_a_asesor", "argumentos": {"motivo": "plazo_o_precio"}}]
+    },
+    {
+      "id": "K01", "camino": "derivar_a_asesor", "reglas": ["R7"],
+      "descripcion": "Pedido ya confirmado: pide cambiarlo, deriva",
+      "confirmado": "completo",
+      "mensaje": "che, mejor mandame 200 en vez de 500",
+      "esperado": [{"tool": "derivar_a_asesor", "argumentos": {"motivo": "fuera_de_alcance"}}]
+    },
+    {
+      "id": "K02", "camino": "registrar_pedido", "reglas": ["R7"],
+      "descripcion": "Pedido ya confirmado: arranca otro, sin heredar material ni medidas",
+      "confirmado": "completo",
+      "mensaje": "también necesito 200 volantes",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"producto": "impresion_digital", "cantidad": 200, "material": null, "medidas": null}}]
+    },
+    {
+      "id": "C01", "camino": "confirmar_pedido", "reglas": ["R16"], "critico": true,
+      "descripcion": "Resumen mostrado: 'sí' confirma",
+      "pedido": "completo",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 500 tarjetas de 9x5 en cartulina 300g, el diseño ya lo tengo, las necesito para el viernes 16"},
+        {"role": "assistant", "content": "[pedido_pendiente_confirmacion]"}
+      ],
+      "mensaje": "sí",
+      "esperado": [{"tool": "confirmar_pedido", "argumentos": {"acepta": true}}]
+    },
+    {
+      "id": "C02", "camino": "confirmar_pedido", "reglas": ["R16"], "critico": true,
+      "descripcion": "Resumen mostrado: 'dale' confirma",
+      "pedido": "completo",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 500 tarjetas de 9x5 en cartulina 300g, el diseño ya lo tengo, las necesito para el viernes 16"},
+        {"role": "assistant", "content": "[pedido_pendiente_confirmacion]"}
+      ],
+      "mensaje": "dale, está perfecto así",
+      "esperado": [{"tool": "confirmar_pedido", "argumentos": {"acepta": true}}]
+    },
+    {
+      "id": "C03", "camino": "confirmar_pedido", "reglas": ["R16"], "critico": true,
+      "descripcion": "Resumen mostrado: un 👍 solo confirma",
+      "pedido": "completo",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 500 tarjetas de 9x5 en cartulina 300g, el diseño ya lo tengo, las necesito para el viernes 16"},
+        {"role": "assistant", "content": "[pedido_pendiente_confirmacion]"}
+      ],
+      "mensaje": "👍",
+      "esperado": [{"tool": "confirmar_pedido", "argumentos": {"acepta": true}}]
+    },
+    {
+      "id": "C04", "camino": "confirmar_pedido", "reglas": ["R16"], "critico": true,
+      "descripcion": "Resumen mostrado: 'listo, gracias' confirma",
+      "pedido": "completo",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 500 tarjetas de 9x5 en cartulina 300g, el diseño ya lo tengo, las necesito para el viernes 16"},
+        {"role": "assistant", "content": "[pedido_pendiente_confirmacion]"}
+      ],
+      "mensaje": "listo, gracias",
+      "esperado": [{"tool": "confirmar_pedido", "argumentos": {"acepta": true}}]
+    },
+    {
+      "id": "C05", "camino": "confirmar_pedido", "reglas": ["R8", "R16"], "critico": true,
+      "descripcion": "Resumen mostrado: 'sí pero cambiame X' es acepta=false",
+      "pedido": "completo",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 500 tarjetas de 9x5 en cartulina 300g, el diseño ya lo tengo, las necesito para el viernes 16"},
+        {"role": "assistant", "content": "[pedido_pendiente_confirmacion]"}
+      ],
+      "mensaje": "sí, pero cambiame la cantidad a 300",
+      "esperado": [{"tool": "confirmar_pedido", "argumentos": {"acepta": false}}]
+    },
+    {
+      "id": "C06", "camino": "confirmar_pedido", "reglas": ["R8"], "critico": true,
+      "descripcion": "Resumen mostrado: rechazo",
+      "pedido": "completo",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 500 tarjetas de 9x5 en cartulina 300g, el diseño ya lo tengo, las necesito para el viernes 16"},
+        {"role": "assistant", "content": "[pedido_pendiente_confirmacion]"}
+      ],
+      "mensaje": "no, así no",
+      "esperado": [{"tool": "confirmar_pedido", "argumentos": {"acepta": false}}]
+    },
+    {
+      "id": "C07", "camino": "cierre_social", "reglas": ["R16"], "critico": true,
+      "descripcion": "Resumen mostrado: 'gracias' pelado no confirma; registrar_pedido sin cambios vuelve a mostrar el resumen",
+      "pedido": "completo",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 500 tarjetas de 9x5 en cartulina 300g, el diseño ya lo tengo, las necesito para el viernes 16"},
+        {"role": "assistant", "content": "[pedido_pendiente_confirmacion]"}
+      ],
+      "mensaje": "gracias!",
+      "esperado": [{"tool": "registrar_pedido", "no_cambia_el_pedido": true}]
+    },
+    {
+      "id": "C08", "camino": "confirmar_pedido", "reglas": ["R16"], "critico": true,
+      "descripcion": "Resumen mostrado con el párrafo de primer contacto puesto: 'dale' sigue confirmando",
+      "nombre_preguntado": true,
+      "pedido": "completo",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 500 tarjetas de 9x5 en cartulina 300g, el diseño ya lo tengo, las necesito para el viernes 16"},
+        {"role": "assistant", "content": "[pedido_pendiente_confirmacion]"}
+      ],
+      "mensaje": "dale",
+      "esperado": [{"tool": "confirmar_pedido", "argumentos": {"acepta": true}}]
+    },
+    {
+      "id": "C09", "camino": "registrar_pedido", "reglas": ["R16"], "critico": true,
+      "descripcion": "Resumen mostrado: un nombre solo no confirma ni cancela; es registrar_pedido con ese nombre",
+      "nombre_preguntado": true,
+      "pedido": "completo",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 500 tarjetas de 9x5 en cartulina 300g, el diseño ya lo tengo, las necesito para el viernes 16"},
+        {"role": "assistant", "content": "[pedido_pendiente_confirmacion]"}
+      ],
+      "mensaje": "Carla",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"nombre_cliente": "Carla"}}]
+    },
+    {
+      "id": "S01", "camino": "cierre_social", "reglas": ["R16"], "critico": true,
+      "descripcion": "Sin pedido: 'gracias' es pedir_dato_faltante(producto)",
+      "mensaje": "gracias!",
+      "esperado": [{"tool": "pedir_dato_faltante", "argumentos": {"dato": "producto"}}]
+    },
+    {
+      "id": "S02", "camino": "cierre_social", "reglas": ["R16"], "critico": true,
+      "descripcion": "Sin pedido: un 👍 es pedir_dato_faltante(producto)",
+      "mensaje": "👍",
+      "esperado": [{"tool": "pedir_dato_faltante", "argumentos": {"dato": "producto"}}]
+    },
+    {
+      "id": "S03", "camino": "cierre_social", "reglas": ["R16"],
+      "descripcion": "Sin pedido: otro emoji solo es pedir_dato_faltante(producto)",
+      "mensaje": "😊",
+      "esperado": [{"tool": "pedir_dato_faltante", "argumentos": {"dato": "producto"}}]
+    },
+    {
+      "id": "S04", "camino": "cierre_social", "reglas": ["R16"], "critico": true,
+      "descripcion": "Pedido a medias: 'gracias' es pedir_dato_faltante con un dato que falta",
+      "pedido": "stickers_sin_medidas",
+      "historial": [
+        {"role": "user", "content": "quiero 200 stickers en vinilo"},
+        {"role": "assistant", "content": "[dato_faltante: medidas]"}
+      ],
+      "mensaje": "gracias!",
+      "esperado": [
+        {"tool": "pedir_dato_faltante", "argumentos": {"dato": "medidas"}},
+        {"tool": "pedir_dato_faltante", "argumentos": {"dato": "fecha_necesita"}},
+        {"tool": "pedir_dato_faltante", "argumentos": {"dato": "tiene_diseno"}}
+      ],
+      "por_que": "SPECS §6 pide 'un dato que falta', no uno en particular: faltan medidas, fecha y diseño, y cualquiera sigue la recolección sin inventar nada."
+    },
+    {
+      "id": "S05", "camino": "cierre_social", "reglas": ["R16"], "critico": true,
+      "descripcion": "Pedido a medias, la última repregunta no fue el material: un 👍 es pedir_dato_faltante",
+      "pedido": "stickers_sin_medidas",
+      "historial": [
+        {"role": "user", "content": "quiero 200 stickers en vinilo"},
+        {"role": "assistant", "content": "[dato_faltante: medidas]"}
+      ],
+      "mensaje": "👍",
+      "esperado": [
+        {"tool": "pedir_dato_faltante", "argumentos": {"dato": "medidas"}},
+        {"tool": "pedir_dato_faltante", "argumentos": {"dato": "fecha_necesita"}},
+        {"tool": "pedir_dato_faltante", "argumentos": {"dato": "tiene_diseno"}}
+      ],
+      "por_que": "Igual que S04: cualquier dato que falta vale. Lo que se mide es que el 👍 no se lea como aceptar el material a definir, que solo vale tras [dato_faltante: material]."
+    },
+    {
+      "id": "M01", "camino": "registrar_pedido", "reglas": ["R15"],
+      "descripcion": "Pedido sin material: pregunta qué materiales hay, queda a definir",
+      "pedido": "lonas_sin_material",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 3 lonas de 2x1"},
+        {"role": "assistant", "content": "[dato_faltante: material]"}
+      ],
+      "mensaje": "¿qué materiales tienen?",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"material": "a definir con el asesor"}}]
+    },
+    {
+      "id": "M02", "camino": "registrar_pedido", "reglas": ["R15"],
+      "descripcion": "Pedido sin material: no sabe y pide que lo decida la imprenta",
+      "pedido": "lonas_sin_material",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 3 lonas de 2x1"},
+        {"role": "assistant", "content": "[dato_faltante: material]"}
+      ],
+      "mensaje": "ni idea, que lo decidan ustedes",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"material": "a definir con el asesor"}}]
+    },
+    {
+      "id": "M03", "camino": "cierre_social", "reglas": ["R15"], "critico": true,
+      "descripcion": "Un 👍 a la repregunta del material acepta dejarlo a definir",
+      "pedido": "lonas_sin_material",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 3 lonas de 2x1"},
+        {"role": "assistant", "content": "[dato_faltante: material]"}
+      ],
+      "mensaje": "👍",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"material": "a definir con el asesor"}}]
+    },
+    {
+      "id": "M04", "camino": "cierre_social", "reglas": ["R15"], "critico": true,
+      "descripcion": "Un 'sí' a la repregunta del material acepta dejarlo a definir",
+      "pedido": "lonas_sin_material",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 3 lonas de 2x1"},
+        {"role": "assistant", "content": "[dato_faltante: material]"}
+      ],
+      "mensaje": "sí",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"material": "a definir con el asesor"}}]
+    },
+    {
+      "id": "M05", "camino": "cierre_social", "reglas": ["R15"], "critico": true,
+      "descripcion": "Un 'dale' a la repregunta del material acepta dejarlo a definir",
+      "pedido": "lonas_sin_material",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 3 lonas de 2x1"},
+        {"role": "assistant", "content": "[dato_faltante: material]"}
+      ],
+      "mensaje": "dale",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"material": "a definir con el asesor"}}]
+    },
+    {
+      "id": "M06", "camino": "registrar_pedido", "reglas": ["R15"],
+      "descripcion": "Contesta la repregunta nombrando un material: ese material",
+      "pedido": "lonas_sin_material",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 3 lonas de 2x1"},
+        {"role": "assistant", "content": "[dato_faltante: material]"}
+      ],
+      "mensaje": "en vinilo",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"material": "vinilo"}}]
+    },
+    {
+      "id": "M07", "camino": "registrar_pedido", "reglas": ["R15"],
+      "descripcion": "Un sí que nombra un material elige ese material, no el a definir",
+      "pedido": "lonas_sin_material",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 3 lonas de 2x1"},
+        {"role": "assistant", "content": "[dato_faltante: material]"}
+      ],
+      "mensaje": "sí, en lona",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"material": "lona"}}]
+    },
+    {
+      "id": "M08", "camino": "derivar_a_asesor", "reglas": ["R15"],
+      "descripcion": "Pregunta si tienen un material: sin_stock, no material a definir",
+      "pedido": "lonas_sin_material",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 3 lonas de 2x1"},
+        {"role": "assistant", "content": "[dato_faltante: material]"}
+      ],
+      "mensaje": "¿tienen lona blanca?",
+      "esperado": [{"tool": "derivar_a_asesor", "argumentos": {"motivo": "sin_stock"}}]
+    },
+    {
+      "id": "M09", "camino": "registrar_pedido", "reglas": ["R15"],
+      "descripcion": "Ya dijo lona y pregunta por otros materiales: no la borra",
+      "pedido": "lonas_con_lona",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 3 lonas de 2x1 en lona"},
+        {"role": "assistant", "content": "[dato_faltante: fecha_necesita]"}
+      ],
+      "mensaje": "¿qué otros materiales hay?",
+      "esperado": [
+        {"tool": "registrar_pedido", "argumentos": {"material": null}},
+        {"tool": "registrar_pedido", "argumentos": {"material": "lona"}},
+        {"tool": "consulta_general", "argumentos": {"tema": "catalogo"}}
+      ],
+      "por_que": "R15 pide que la lona no se borre. registrar_pedido sin material es lo que dice la regla 6 del prompt; reenviar 'lona' tampoco borra nada; y el catálogo contesta lo que preguntó con lo más cercano a una lista de materiales que tiene el bot (así se decidió en el bot anterior el 14/09). Fallo es el material a definir, o cualquier otra tool."
+    },
+    {
+      "id": "M10", "camino": "registrar_pedido", "reglas": ["R15"],
+      "descripcion": "Ya dijo lona y pide que lo decida el asesor: pasa a definir",
+      "pedido": "lonas_con_lona",
+      "historial": [
+        {"role": "user", "content": "hola, necesito 3 lonas de 2x1 en lona"},
+        {"role": "assistant", "content": "[dato_faltante: fecha_necesita]"}
+      ],
+      "mensaje": "mejor que el material lo decida el asesor",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"material": "a definir con el asesor"}}]
+    },
+    {
+      "id": "N01", "camino": "registrar_pedido", "reglas": ["R16", "R42"],
+      "descripcion": "Sin pedido y con el nombre preguntado: un nombre solo es el nombre, no un dato faltante",
+      "nombre_preguntado": true,
+      "historial": [
+        {"role": "user", "content": "¿dónde queda el local?"},
+        {"role": "assistant", "content": "[consulta_general: direccion]"}
+      ],
+      "mensaje": "Carla",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"nombre_cliente": "Carla", "producto": null}}]
+    },
+    {
+      "id": "N02", "camino": "cierre_social", "reglas": ["R14", "R16"], "critico": true,
+      "descripcion": "Con el nombre preguntado, 'gracias' no es un nombre: sin pedido, pedir_dato_faltante(producto)",
+      "nombre_preguntado": true,
+      "historial": [
+        {"role": "user", "content": "¿dónde queda el local?"},
+        {"role": "assistant", "content": "[consulta_general: direccion]"}
+      ],
+      "mensaje": "gracias!",
+      "esperado": [{"tool": "pedir_dato_faltante", "argumentos": {"dato": "producto"}}]
+    },
+    {
+      "id": "N03", "camino": "registrar_pedido", "reglas": ["R43"],
+      "descripcion": "Dice su nombre con el pedido y no coincide con el perfil: vale el que dice",
+      "mensaje": "hola, soy Carla, necesito 200 tarjetas personales",
+      "esperado": [{"tool": "registrar_pedido", "argumentos": {"nombre_cliente": "Carla", "producto": "impresion_digital", "cantidad": 200}}]
+    }
+  ]
+}

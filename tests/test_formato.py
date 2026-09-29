@@ -4,7 +4,15 @@ import re
 import pytest
 
 from app import formato
-from app.formato import ILEGIBLE, alias_conversacion, en_una_linea, para_log, solo_digitos
+from app.formato import (
+    DIAS,
+    ILEGIBLE,
+    MESES,
+    alias_conversacion,
+    en_una_linea,
+    para_log,
+    solo_digitos,
+)
 
 TELEFONO = "+54 9 11 5555-0000"
 ALIAS = re.compile(r"[0-9a-f]{12}")
@@ -152,3 +160,10 @@ def test_solo_digitos_descarta_signos(telefono: str, esperado: str) -> None:
 def test_solo_digitos_solo_ascii() -> None:
     """R46: un superíndice o un dígito de otro alfabeto no entra al teléfono."""
     assert solo_digitos("+54 9 11 5555-000²٣") == "549115555000"
+
+
+def test_dias_y_meses_en_castellano() -> None:
+    """R40: días en el orden de weekday() y meses de enero a diciembre, con tildes y sin locale."""
+    assert len(DIAS) == 7 and len(MESES) == 12
+    assert (DIAS[0], DIAS[2], DIAS[5], DIAS[6]) == ("lunes", "miércoles", "sábado", "domingo")
+    assert (MESES[0], MESES[8], MESES[11]) == ("enero", "septiembre", "diciembre")
