@@ -1,8 +1,11 @@
 """Webhook de Chatwoot: autentica, filtra y contesta un eco provisorio (CP1)."""
 
+import hashlib
 import hmac
 import logging
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,6 +13,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.chatwoot import ClienteChatwoot, MensajeEntrante, parsear_evento
+from app.config import RUTA_POR_DEFECTO, ConfigNegocio, cargar_config
 from app.formato import alias_conversacion, en_una_linea, para_log
 
 # CLAUDE.md "Reglas duras del codigo": .env con ruta explicita, nunca sin ruta
@@ -29,21 +33,20 @@ VARIABLES_CHATWOOT = (
 )
 TOPE_BYTES_BODY = 1_000_000
 TOPE_CARACTERES_ECO = 4_096
-
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-
-
-def _quitar_query(record: logging.LogRecord) -> bool:
-    # R52: el access log de uvicorn muestra la query string, y ahi viaja el secreto
-    if record.args:
-        record.args = tuple(
-            arg.split("?", 1)[0] if isinstance(arg, str) and "?" in arg else arg
-            for arg in record.args
-        )
-    return True
+TOLERANCIA_SEGUNDOS = 300
 
 
-logging.getLogger("uvicorn.access").addFilter(_quitar_query)
+@asynccontextmanager
+async def _ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
+    # R54: la config rota se descubre al arrancar. Solo corre con el servidor (o `with TestClient`):
+    # importar la app en pytest no toca el disco.
+    app.state.config = cargar_config(RUTA_POR_DEFECTO)
+    yield
+
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=_ciclo_de_vida)
+
+# R52: el secreto ya no viaja en la URL, asi que el access log de uvicorn no necesita filtro.
 # R52: en INFO, httpx loguea la URL completa de sus pedidos (ahi va el id real de conversacion)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -52,12 +55,23 @@ def get_cliente_chatwoot() -> ClienteChatwoot:
     return ClienteChatwoot()
 
 
-def _autenticado(token: str) -> bool:
+def get_config(request: Request) -> ConfigNegocio:
+    return request.app.state.config  # cargada en _ciclo_de_vida; los tests sobreescriben esta dependencia
+
+
+def _firma_valida(cuerpo: bytes, firma: str, timestamp: str, config: ConfigNegocio) -> bool:
+    """R49: firma = "sha256=" + HMAC-SHA256("<timestamp>.<body>") con el secret del Agent Bot."""
     secreto = os.environ.get("CHATWOOT_WEBHOOK_SECRET", "")
     if not secreto:
         return False  # R49: un secreto vacio o no configurado nunca coincide
-    # R50: compare_digest exige bytes, un token no ASCII no puede tumbar el webhook
-    return hmac.compare_digest(secreto.encode("utf-8"), (token or "").encode("utf-8"))
+    if not (timestamp.isascii() and timestamp.isdigit() and len(timestamp) <= 12):
+        return False  # ausente o no numerico
+    if abs(config.ahora().timestamp() - int(timestamp)) > TOLERANCIA_SEGUNDOS:
+        return False  # R49: frena reenvios viejos y relojes adelantados
+    firmado = timestamp.encode() + b"." + cuerpo
+    esperada = "sha256=" + hmac.new(secreto.encode("utf-8"), firmado, hashlib.sha256).hexdigest()
+    # R50: compare_digest sobre bytes, un header no ASCII no puede tumbar el webhook
+    return hmac.compare_digest(esperada.encode(), firma.encode("utf-8", "replace"))
 
 
 def _cuenta_valida(mensaje: MensajeEntrante) -> bool:
@@ -122,8 +136,8 @@ async def _leer_cuerpo_con_tope(request: Request) -> bytes | None:
 async def webhook_chatwoot(
     request: Request,
     background_tasks: BackgroundTasks,
-    token: str = "",
     cliente: ClienteChatwoot = Depends(get_cliente_chatwoot),
+    config: ConfigNegocio = Depends(get_config),
 ) -> dict[str, str] | JSONResponse:
     cuerpo = await _leer_cuerpo_con_tope(request)
     if cuerpo is None:
@@ -131,7 +145,9 @@ async def webhook_chatwoot(
         # 413 no dispara reintentos de Chatwoot (R50: solo reintenta 429/500).
         return JSONResponse({"estado": "ignorado"}, status_code=413)
     # R50: siempre 200, nunca se provocan reintentos en bucle
-    if not _autenticado(token):
+    firma = request.headers.get("x-chatwoot-signature", "")
+    timestamp = request.headers.get("x-chatwoot-timestamp", "")
+    if not _firma_valida(cuerpo, firma, timestamp, config):
         logger.warning("Webhook Chatwoot: autenticacion fallida")
         return {"estado": "ignorado"}
     mensaje = parsear_evento(cuerpo)

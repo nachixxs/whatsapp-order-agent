@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import json
 import logging
 import socket
@@ -7,7 +9,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.chatwoot import ClienteChatwoot
-from app.main import CARPETA_CAPTURAS, _quitar_query, app, get_cliente_chatwoot
+from app.config import ConfigNegocio
+from app.main import app, get_cliente_chatwoot, get_config
 from tests.conftest import _payload
 
 SECRETO = "secreto-de-prueba"
@@ -39,48 +42,36 @@ def cliente_falso() -> ClienteFalso:
 
 
 @pytest.fixture
-def client() -> TestClient:
-    return TestClient(app)
+def client(config: ConfigNegocio) -> TestClient:
+    app.dependency_overrides[get_config] = lambda: config
+    yield TestClient(app)
+    app.dependency_overrides.pop(get_config, None)
 
 
-def test_webhook_secreto_vacio_nunca_coincide(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """R49: un secreto vacio (no configurado) nunca coincide, aunque el token tambien venga vacio."""
-    respuesta = client.post("/webhook/chatwoot", content=json.dumps(_payload()).encode())
-    assert respuesta.status_code == 200
-    assert respuesta.json() == {"estado": "ignorado"}
+def _firmar(cuerpo: bytes, timestamp: str, secreto: str = SECRETO) -> str:
+    firmado = timestamp.encode() + b"." + cuerpo
+    return "sha256=" + hmac.new(secreto.encode(), firmado, hashlib.sha256).hexdigest()
 
 
-def test_webhook_token_no_ascii_nunca_200_con_error(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """R50: un token con caracteres no ASCII (o el secreto con tilde) nunca da 500."""
-    _configurar_entorno(monkeypatch)
-    respuesta = client.post(
-        "/webhook/chatwoot",
-        params={"token": "ñ"},
-        content=json.dumps(_payload()).encode(),
-    )
-    assert respuesta.status_code == 200
-    assert respuesta.json() == {"estado": "ignorado"}
-
-
-def test_webhook_secreto_incorrecto(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """R49: un secreto que no coincide se descarta, siempre 200."""
-    _configurar_entorno(monkeypatch)
-    respuesta = client.post(
-        "/webhook/chatwoot?token=otra-cosa", content=json.dumps(_payload()).encode()
-    )
-    assert respuesta.status_code == 200
-    assert respuesta.json() == {"estado": "ignorado"}
+def _post(
+    client: TestClient,
+    config: ConfigNegocio,
+    cuerpo: bytes,
+    desfase: int = 0,
+    secreto: str = SECRETO,
+) -> httpx.Response:
+    """POST firmado como Chatwoot; `desfase` mueve el timestamp respecto de config.ahora()."""
+    timestamp = str(int(config.ahora().timestamp()) + desfase)
+    cabeceras = {"X-Chatwoot-Timestamp": timestamp, "X-Chatwoot-Signature": _firmar(cuerpo, timestamp, secreto)}
+    return client.post("/webhook/chatwoot", content=cuerpo, headers=cabeceras)
 
 
 def test_webhook_secreto_correcto_procesa(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
 ) -> None:
     """R49: con el secreto correcto y account/inbox esperados, el webhook procesa."""
     _configurar_entorno(monkeypatch)
-    respuesta = client.post(
-        f"/webhook/chatwoot?token={SECRETO}", content=json.dumps(_payload()).encode()
+    respuesta = _post(client, config, json.dumps(_payload()).encode()
     )
     assert respuesta.status_code == 200
     assert respuesta.json() == {"estado": "ok"}
@@ -88,26 +79,24 @@ def test_webhook_secreto_correcto_procesa(
 
 
 def test_webhook_account_equivocada_se_descarta(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
 ) -> None:
     """R49: un account_id que no coincide con el configurado se descarta."""
     _configurar_entorno(monkeypatch)
     payload = _payload(account={"id": 999})
-    respuesta = client.post(
-        f"/webhook/chatwoot?token={SECRETO}", content=json.dumps(payload).encode()
+    respuesta = _post(client, config, json.dumps(payload).encode()
     )
     assert respuesta.json() == {"estado": "ignorado"}
     assert cliente_falso.respuestas == []
 
 
 def test_webhook_inbox_equivocado_se_descarta(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
 ) -> None:
     """R49: un inbox_id que no coincide con el configurado se descarta."""
     _configurar_entorno(monkeypatch)
     payload = _payload(inbox={"id": 999})
-    respuesta = client.post(
-        f"/webhook/chatwoot?token={SECRETO}", content=json.dumps(payload).encode()
+    respuesta = _post(client, config, json.dumps(payload).encode()
     )
     assert respuesta.json() == {"estado": "ignorado"}
     assert cliente_falso.respuestas == []
@@ -123,6 +112,7 @@ def test_webhook_inbox_equivocado_se_descarta(
 )
 def test_webhook_r48_se_descarta_sin_eco(
     client: TestClient,
+    config: ConfigNegocio,
     monkeypatch: pytest.MonkeyPatch,
     cliente_falso: ClienteFalso,
     cambios: dict[str, object],
@@ -130,8 +120,7 @@ def test_webhook_r48_se_descarta_sin_eco(
     """R48: outgoing, nota privada y otro evento nunca generan un eco."""
     _configurar_entorno(monkeypatch)
     payload = _payload(**cambios)
-    respuesta = client.post(
-        f"/webhook/chatwoot?token={SECRETO}", content=json.dumps(payload).encode()
+    respuesta = _post(client, config, json.dumps(payload).encode()
     )
     assert respuesta.status_code == 200
     assert respuesta.json() == {"estado": "ignorado"}
@@ -150,45 +139,46 @@ def test_webhook_r48_se_descarta_sin_eco(
 )
 def test_webhook_r51_payload_roto_siempre_200_sin_eco(
     client: TestClient,
+    config: ConfigNegocio,
     monkeypatch: pytest.MonkeyPatch,
     cliente_falso: ClienteFalso,
     cuerpo: bytes,
 ) -> None:
     """R51 y R50: un payload roto o con tipos raros nunca lanza y siempre da 200 sin eco."""
     _configurar_entorno(monkeypatch)
-    respuesta = client.post(f"/webhook/chatwoot?token={SECRETO}", content=cuerpo)
+    respuesta = _post(client, config, cuerpo)
     assert respuesta.status_code == 200
     assert cliente_falso.respuestas == []
 
 
 def test_webhook_eco_de_adjuntos(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
 ) -> None:
     """Un mensaje solo con adjuntos contesta 'Eco: recibi N archivo(s)'."""
     _configurar_entorno(monkeypatch)
     payload = _payload(content="", attachments=[{"id": 1}, {"id": 2}])
-    client.post(f"/webhook/chatwoot?token={SECRETO}", content=json.dumps(payload).encode())
+    _post(client, config, json.dumps(payload).encode())
     assert cliente_falso.respuestas == [(555, "Eco: recibí 2 archivo(s)")]
 
 
 def test_webhook_eco_se_corta_a_4096_caracteres(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
 ) -> None:
     """R35: ningun mensaje de eco supera los 4.096 caracteres."""
     _configurar_entorno(monkeypatch)
     payload = _payload(content="a" * 5_000)
-    client.post(f"/webhook/chatwoot?token={SECRETO}", content=json.dumps(payload).encode())
+    _post(client, config, json.dumps(payload).encode())
     assert len(cliente_falso.respuestas) == 1
     assert len(cliente_falso.respuestas[0][1]) == 4_096
 
 
 def test_webhook_body_gigante_se_corta_sin_provocar_reintento(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
 ) -> None:
     """Seguridad: un body de mas de 1 MB se corta con un codigo que Chatwoot no reintenta."""
     _configurar_entorno(monkeypatch)
     payload = _payload(content="a" * 2_000_000)
-    respuesta = client.post(f"/webhook/chatwoot?token={SECRETO}", content=json.dumps(payload).encode())
+    respuesta = _post(client, config, json.dumps(payload).encode())
     assert respuesta.status_code not in (429, 500)
     assert cliente_falso.respuestas == []
 
@@ -199,7 +189,7 @@ def test_docs_deshabilitados(client: TestClient) -> None:
     assert client.get("/openapi.json").status_code == 404
 
 
-def test_salud_ok_con_config_completa(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_salud_ok_con_config_completa(client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch) -> None:
     """R55: /salud da 200 cuando la config de Chatwoot esta completa."""
     _configurar_entorno(monkeypatch)
     respuesta = client.get("/salud")
@@ -215,7 +205,7 @@ def test_salud_degradado_sin_detalle(client: TestClient) -> None:
 
 
 def test_salud_no_llama_al_cliente_de_chatwoot(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """R55/DoD CP1: /salud no hace ninguna llamada de red, ni siquiera intenta abrir un socket.
 
@@ -236,23 +226,26 @@ def test_salud_no_llama_al_cliente_de_chatwoot(
 
 def test_webhook_r52_secreto_no_aparece_en_los_logs(
     client: TestClient,
+    config: ConfigNegocio,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """R52: el secreto no aparece en ningun log, ni con la auth fallida ni con la exitosa."""
     _configurar_entorno(monkeypatch)
     with caplog.at_level(logging.INFO):
-        client.post(f"/webhook/chatwoot?token={SECRETO}", content=json.dumps(_payload()).encode())
-        client.post("/webhook/chatwoot?token=otro-secreto-cualquiera", content=b"{}")
+        _post(client, config, json.dumps(_payload()).encode())
+        _post(client, config, b"{}", secreto="otro-secreto-cualquiera")
     # Solo los logs de la app: el "httpx" del TestClient loguea su propia URL de salida,
     # que no es un log que emita este servidor.
     texto = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("app."))
     assert SECRETO not in texto
     assert "otro-secreto-cualquiera" not in texto
+    assert "sha256=" not in texto
 
 
 def test_webhook_captura_apagada_por_defecto_no_escribe_nada(
     client: TestClient,
+    config: ConfigNegocio,
     monkeypatch: pytest.MonkeyPatch,
     cliente_falso: ClienteFalso,
     tmp_path: pytest.TempPathFactory,
@@ -261,12 +254,13 @@ def test_webhook_captura_apagada_por_defecto_no_escribe_nada(
     _configurar_entorno(monkeypatch)
     monkeypatch.setattr("app.main.CARPETA_CAPTURAS", tmp_path)
     archivo = tmp_path / "payloads.jsonl"
-    client.post(f"/webhook/chatwoot?token={SECRETO}", content=json.dumps(_payload()).encode())
+    _post(client, config, json.dumps(_payload()).encode())
     assert not archivo.exists()
 
 
 def test_webhook_captura_encendida_agrega_una_linea(
     client: TestClient,
+    config: ConfigNegocio,
     monkeypatch: pytest.MonkeyPatch,
     cliente_falso: ClienteFalso,
     tmp_path: pytest.TempPathFactory,
@@ -276,7 +270,7 @@ def test_webhook_captura_encendida_agrega_una_linea(
     monkeypatch.setenv("CHATWOOT_CAPTURAR_PAYLOADS", "1")
     monkeypatch.setattr("app.main.CARPETA_CAPTURAS", tmp_path)
     archivo = tmp_path / "payloads.jsonl"
-    client.post(f"/webhook/chatwoot?token={SECRETO}", content=json.dumps(_payload()).encode())
+    _post(client, config, json.dumps(_payload()).encode())
     lineas = archivo.read_text(encoding="utf-8").splitlines()
     assert len(lineas) == 1
     assert json.loads(lineas[0])["event"] == "message_created"
@@ -284,6 +278,7 @@ def test_webhook_captura_encendida_agrega_una_linea(
 
 def test_webhook_captura_falla_escritura_sigue_devolviendo_200(
     client: TestClient,
+    config: ConfigNegocio,
     monkeypatch: pytest.MonkeyPatch,
     cliente_falso: ClienteFalso,
     caplog: pytest.LogCaptureFixture,
@@ -298,25 +293,115 @@ def test_webhook_captura_falla_escritura_sigue_devolviendo_200(
 
     monkeypatch.setattr("app.main.CARPETA_CAPTURAS", _CarpetaRota())
     with caplog.at_level(logging.WARNING):
-        respuesta = client.post(
-            f"/webhook/chatwoot?token={SECRETO}", content=json.dumps(_payload()).encode()
+        respuesta = _post(client, config, json.dumps(_payload()).encode()
         )
     assert respuesta.status_code == 200
     assert respuesta.json() == {"estado": "ok"}
     assert any("no se pudo escribir la captura" in r.getMessage() for r in caplog.records)
 
 
-def test_quitar_query_filtra_el_token_del_access_log() -> None:
-    """R52: el filtro del access log de uvicorn borra la query string (ahi viaja el secreto)."""
-    registro = logging.LogRecord(
-        name="uvicorn.access",
-        level=logging.INFO,
-        pathname=__file__,
-        lineno=1,
-        msg='%s - "%s %s HTTP/%s" %d',
-        args=("127.0.0.1", "POST", f"/webhook/chatwoot?token={SECRETO}", "1.1", 200),
-        exc_info=None,
-    )
-    assert _quitar_query(registro) is True
-    assert SECRETO not in "".join(str(arg) for arg in registro.args)
-    assert registro.args[2] == "/webhook/chatwoot"
+def _cabeceras(cuerpo: bytes, config: ConfigNegocio, desfase: int = 0) -> dict[str, str]:
+    timestamp = str(int(config.ahora().timestamp()) + desfase)
+    return {"X-Chatwoot-Timestamp": timestamp, "X-Chatwoot-Signature": _firmar(cuerpo, timestamp)}
+
+
+def _sin_eco(respuesta: httpx.Response, cliente_falso: ClienteFalso) -> None:
+    assert respuesta.status_code == 200
+    assert respuesta.json() == {"estado": "ignorado"}
+    assert cliente_falso.respuestas == []
+
+
+def test_webhook_firma_buena_procesa(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+) -> None:
+    """R49: firma buena y timestamp dentro de los 5 minutos (borde incluido) procesa."""
+    _configurar_entorno(monkeypatch)
+    respuesta = _post(client, config, json.dumps(_payload()).encode(), desfase=-300)
+    assert respuesta.json() == {"estado": "ok"}
+    assert cliente_falso.respuestas == [(555, "Eco: hola, quiero tarjetas")]
+
+
+def test_webhook_sin_firma_no_procesa(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+) -> None:
+    """R49: un POST sin X-Chatwoot-Signature ni Timestamp no se procesa."""
+    _configurar_entorno(monkeypatch)
+    _sin_eco(client.post("/webhook/chatwoot", content=json.dumps(_payload()).encode()), cliente_falso)
+
+
+def test_webhook_firma_mala_no_procesa(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+) -> None:
+    """R49: firma hecha con otro secreto, o de otro body, no se procesa."""
+    _configurar_entorno(monkeypatch)
+    cuerpo = json.dumps(_payload()).encode()
+    _sin_eco(_post(client, config, cuerpo, secreto="otro-secreto"), cliente_falso)
+    cabeceras = _cabeceras(b"{}", config)  # firma valida, pero de otro body
+    _sin_eco(client.post("/webhook/chatwoot", content=cuerpo, headers=cabeceras), cliente_falso)
+
+
+def test_webhook_firma_sin_prefijo_no_procesa(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+) -> None:
+    """R49: Chatwoot v4.18.0 firma como 'sha256=<hex>'; el hex pelado no se acepta."""
+    _configurar_entorno(monkeypatch)
+    cuerpo = json.dumps(_payload()).encode()
+    cabeceras = _cabeceras(cuerpo, config)
+    cabeceras["X-Chatwoot-Signature"] = cabeceras["X-Chatwoot-Signature"].removeprefix("sha256=")
+    _sin_eco(client.post("/webhook/chatwoot", content=cuerpo, headers=cabeceras), cliente_falso)
+
+
+@pytest.mark.parametrize("desfase", [-301, 301, 3_600, -86_400])
+def test_webhook_timestamp_fuera_de_ventana_no_procesa(
+    client: TestClient,
+    config: ConfigNegocio,
+    monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso,
+    desfase: int,
+) -> None:
+    """R49: un timestamp a mas de 5 minutos de config.ahora(), viejo o del futuro, no se procesa."""
+    _configurar_entorno(monkeypatch)
+    _sin_eco(_post(client, config, json.dumps(_payload()).encode(), desfase=desfase), cliente_falso)
+
+
+@pytest.mark.parametrize("timestamp", ["", "abc", "12.5", "-5", "١٢٣", "9" * 5_000])
+def test_webhook_timestamp_no_numerico_no_procesa(
+    client: TestClient,
+    config: ConfigNegocio,
+    monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso,
+    timestamp: str,
+) -> None:
+    """R49 y R50: un timestamp ausente o no numerico, firmado bien, no se procesa y no da 500."""
+    _configurar_entorno(monkeypatch)
+    cuerpo = json.dumps(_payload()).encode()
+    cabeceras = {
+        "X-Chatwoot-Timestamp": timestamp.encode("utf-8"),
+        "X-Chatwoot-Signature": _firmar(cuerpo, timestamp).encode(),
+    }
+    _sin_eco(client.post("/webhook/chatwoot", content=cuerpo, headers=cabeceras), cliente_falso)
+
+
+def test_webhook_firma_no_ascii_nunca_da_500(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+) -> None:
+    """R50: un header de firma con caracteres no ASCII se descarta con 200, nunca 500."""
+    _configurar_entorno(monkeypatch)
+    cuerpo = json.dumps(_payload()).encode()
+    cabeceras = _cabeceras(cuerpo, config)
+    cabeceras["X-Chatwoot-Signature"] = "sha256=ñ".encode("utf-8")  # type: ignore[assignment]
+    _sin_eco(client.post("/webhook/chatwoot", content=cuerpo, headers=cabeceras), cliente_falso)
+
+
+def test_webhook_secreto_vacio_nunca_coincide(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso
+) -> None:
+    """R49: sin CHATWOOT_WEBHOOK_SECRET (o vacio) no coincide, ni con una firma hecha con el vacio."""
+    _configurar_entorno(monkeypatch)
+    cuerpo = json.dumps(_payload()).encode()
+    for valor in (None, ""):
+        if valor is None:
+            monkeypatch.delenv("CHATWOOT_WEBHOOK_SECRET")
+        else:
+            monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", valor)
+        _sin_eco(_post(client, config, cuerpo, secreto=""), cliente_falso)
