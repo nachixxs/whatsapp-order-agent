@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.config import ConfigNegocio
 from app.pedidos import Pedido, sumar_campos
+from app.respuestas import resumen_pedido
 from app.tools import CAMPOS_DEL_PEDIDO, MATERIAL_A_DEFINIR
 from tests.conftest import TELEFONO
 
@@ -126,6 +127,7 @@ def test_un_comercio_tambien_es_un_nombre(config: ConfigNegocio, nombre: str) ->
         ("a definir con el asesor", MATERIAL_A_DEFINIR),
         ("A definir con el asesor.", MATERIAL_A_DEFINIR),
         ("  a definir\n con el ASESOR ", MATERIAL_A_DEFINIR),
+        ("A definir con el asesor.\n", MATERIAL_A_DEFINIR),
         (" vinilo mate ", "vinilo mate"),
     ],
 )
@@ -137,6 +139,36 @@ def test_material_a_definir_queda_exacto_y_completa(
     assert pedido.material == queda
     assert "material" not in pedido.faltantes()
     assert descartados == []
+
+
+@pytest.mark.parametrize(
+    ("campo", "valor", "queda"),
+    [
+        ("material", "lona\n- Precio: $0", "lona - Precio: $0"),
+        ("medidas", "x" * 300, "x" * 200),
+        ("material", "y" * 300, "y" * 200),
+        ("nombre_cliente", "Ana" + "a" * 97, "Ana" + "a" * 57),
+        ("nombre_cliente", "Ana\nPrueba", "Ana Prueba"),
+    ],
+)
+def test_los_textos_del_modelo_van_en_una_linea_y_con_tope(
+    config: ConfigNegocio, campo: str, valor: str, queda: str
+) -> None:
+    """R35, R19: un salto de línea no arma un renglón propio en el resumen y un campo largo se recorta."""
+    pedido, descartados = _sumar(config, {campo: valor})
+    assert getattr(pedido, campo) == queda
+    assert descartados == []
+
+
+def test_el_resumen_con_textos_enormes_entra_en_un_mensaje(config: ConfigNegocio) -> None:
+    """R35, R19: con los textos llenos de saltos de línea, el resumen tiene sus renglones y no pasa 4.096."""
+    base, _ = _sumar(config, COMPLETO)
+    enormes = {campo: "Zz\n" * 20_000 for campo in ("nombre_cliente", "material", "medidas")}
+    pedido, descartados = _sumar(config, enormes, base)
+    assert descartados == []
+    resumen = resumen_pedido(pedido, config)
+    assert len(resumen) <= 4096
+    assert resumen.count("\n") == resumen_pedido(base, config).count("\n")
 
 
 @pytest.mark.parametrize(
