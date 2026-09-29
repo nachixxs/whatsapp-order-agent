@@ -1,20 +1,24 @@
-"""Webhook de Chatwoot: autentica, filtra y contesta un eco provisorio (CP1)."""
+"""Webhook de Chatwoot: autentica, filtra y manda cada mensaje de texto al turno (R47 a R50)."""
 
 import hashlib
 import hmac
 import logging
 import os
-from collections.abc import AsyncIterator
+import sys
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
+import httpx
 from fastapi.responses import JSONResponse
 
 from app.chatwoot import ClienteChatwoot, MensajeEntrante, parsear_evento
 from app.config import RUTA_POR_DEFECTO, ConfigNegocio, cargar_config
-from app.formato import alias_conversacion, en_una_linea, para_log
+from app.formato import alias_conversacion, para_log
+from app.memoria import Memoria
+from app.turno import procesar_lote
 
 # CLAUDE.md "Reglas duras del codigo": .env con ruta explicita, nunca sin ruta
 # (sin ruta sube carpetas hasta encontrar uno, y desde un worktree puede agarrar
@@ -32,16 +36,40 @@ VARIABLES_CHATWOOT = (
     "CHATWOOT_WEBHOOK_SECRET",
 )
 TOPE_BYTES_BODY = 1_000_000
-TOPE_CARACTERES_ECO = 4_096
 TOLERANCIA_SEGUNDOS = 300
+# Raiz del repo: `*.db` esta en .gitignore, asi que la base nunca se versiona; y no depende del cwd.
+MEMORIA_RUTA_POR_DEFECTO = Path(__file__).resolve().parent.parent / "memoria.db"
+
+
+def workers_pedidos(argv: Sequence[str], entorno: Mapping[str, str]) -> int:
+    """R28: cuantos workers pidio quien arranco el servidor. La linea de comandos le gana a
+    WEB_CONCURRENCY, igual que en uvicorn. Un valor que no es entero lanza ValueError (no arranca).
+
+    Limite: solo ve `--workers N`, `--workers=N`, `-w N` y WEB_CONCURRENCY. `uvicorn.run(workers=N)`
+    desde codigo o un gunicorn.conf.py no se detectan desde aca.
+    """
+    for i, arg in enumerate(argv):
+        if arg in ("--workers", "-w") and i + 1 < len(argv):
+            return int(argv[i + 1])
+        if arg.startswith("--workers="):
+            return int(arg.split("=", 1)[1])
+    return int(entorno.get("WEB_CONCURRENCY") or 1)
 
 
 @asynccontextmanager
 async def _ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
     # R54: la config rota se descubre al arrancar. Solo corre con el servidor (o `with TestClient`):
     # importar la app en pytest no toca el disco.
+    if workers_pedidos(sys.argv, os.environ) > 1:
+        # R28: dos procesos sobre el mismo archivo SQLite pisan la misma charla
+        raise RuntimeError("R28: el bot corre con un solo worker (quitar --workers / WEB_CONCURRENCY)")
     app.state.config = cargar_config(RUTA_POR_DEFECTO)
-    yield
+    # R54: una base rota o una ruta invalida se descubre al arrancar, no con el primer mensaje
+    app.state.memoria = Memoria(os.environ.get("MEMORIA_RUTA") or MEMORIA_RUTA_POR_DEFECTO)
+    try:
+        yield
+    finally:
+        app.state.memoria.cerrar()
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=_ciclo_de_vida)
@@ -57,6 +85,10 @@ def get_cliente_chatwoot() -> ClienteChatwoot:
 
 def get_config(request: Request) -> ConfigNegocio:
     return request.app.state.config  # cargada en _ciclo_de_vida; los tests sobreescriben esta dependencia
+
+
+def get_memoria(request: Request) -> Memoria:
+    return request.app.state.memoria  # abierta en _ciclo_de_vida; los tests sobreescriben esta dependencia
 
 
 def _firma_valida(cuerpo: bytes, firma: str, timestamp: str, config: ConfigNegocio) -> bool:
@@ -85,20 +117,25 @@ def _cuenta_valida(mensaje: MensajeEntrante) -> bool:
         return False
 
 
-def _texto_eco(mensaje: MensajeEntrante) -> str:
-    if mensaje.contenido:
-        texto = f"Eco: {mensaje.contenido}"
-    else:
-        texto = f"Eco: recibí {mensaje.cantidad_adjuntos} archivo(s)"
-    # R35: ningun mensaje pasa los 4.096 caracteres
-    return en_una_linea(texto)[:TOPE_CARACTERES_ECO]
-
-
-def _procesar_eco(mensaje: MensajeEntrante, cliente: ClienteChatwoot) -> None:
+def _procesar_turno(
+    mensaje: MensajeEntrante, cliente: ClienteChatwoot, config: ConfigNegocio, memoria: Memoria
+) -> None:
+    """Corre en el threadpool (BackgroundTasks ejecuta las `def` con run_in_threadpool): SQLite y la
+    API bloquean, y el event loop tiene que seguir libre para el webhook (R50)."""
     if mensaje.id_conversacion is None:
         logger.warning("Webhook Chatwoot: sin id de conversacion, no se responde")
         return
-    cliente.responder(mensaje.id_conversacion, _texto_eco(mensaje))
+    if not mensaje.contenido.strip():
+        # Tarea 3.3: los adjuntos todavia no van al turno. Hasta la 3.5 (debounce, R30) un mensaje es un lote.
+        return
+    texto = procesar_lote(mensaje.id_conversacion, [mensaje], config, memoria)
+    if texto is None:
+        return
+    try:
+        cliente.responder(mensaje.id_conversacion, texto)
+    except (httpx.HTTPError, OSError) as error:
+        # R52: solo el tipo del error, nunca su mensaje (puede traer la URL con el id de conversacion)
+        logger.error("Webhook Chatwoot: fallo al responder alias=%s error=%s", alias_conversacion(mensaje.id_conversacion), type(error).__name__)
 
 
 def _capturar_payload(cuerpo: bytes) -> None:
@@ -138,6 +175,7 @@ async def webhook_chatwoot(
     background_tasks: BackgroundTasks,
     cliente: ClienteChatwoot = Depends(get_cliente_chatwoot),
     config: ConfigNegocio = Depends(get_config),
+    memoria: Memoria = Depends(get_memoria),
 ) -> dict[str, str] | JSONResponse:
     cuerpo = await _leer_cuerpo_con_tope(request)
     if cuerpo is None:
@@ -164,7 +202,7 @@ async def webhook_chatwoot(
         para_log(mensaje.evento),
     )
     _capturar_payload(cuerpo)
-    background_tasks.add_task(_procesar_eco, mensaje, cliente)
+    background_tasks.add_task(_procesar_turno, mensaje, cliente, config, memoria)
     return {"estado": "ok"}
 
 
