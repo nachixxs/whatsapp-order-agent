@@ -20,9 +20,7 @@ from app.formato import alias_conversacion, para_log
 from app.memoria import Memoria
 from app.turno import procesar_lote
 
-# CLAUDE.md "Reglas duras del codigo": .env con ruta explicita, nunca sin ruta
-# (sin ruta sube carpetas hasta encontrar uno, y desde un worktree puede agarrar
-# las credenciales de otro checkout)
+# CLAUDE.md "Reglas duras del codigo": ruta explicita, sin ruta agarra el .env de otro checkout
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 logger = logging.getLogger(__name__)
@@ -58,13 +56,12 @@ def workers_pedidos(argv: Sequence[str], entorno: Mapping[str, str]) -> int:
 
 @asynccontextmanager
 async def _ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
-    # R54: la config rota se descubre al arrancar. Solo corre con el servidor (o `with TestClient`):
-    # importar la app en pytest no toca el disco.
+    # R54: config, base rota o ruta invalida se descubren al arrancar, no con el primer mensaje.
+    # Solo corre con el servidor (o `with TestClient`): importar la app en pytest no toca el disco.
     if workers_pedidos(sys.argv, os.environ) > 1:
         # R28: dos procesos sobre el mismo archivo SQLite pisan la misma charla
         raise RuntimeError("R28: el bot corre con un solo worker (quitar --workers / WEB_CONCURRENCY)")
     app.state.config = cargar_config(RUTA_POR_DEFECTO)
-    # R54: una base rota o una ruta invalida se descubre al arrancar, no con el primer mensaje
     app.state.memoria = Memoria(os.environ.get("MEMORIA_RUTA") or MEMORIA_RUTA_POR_DEFECTO)
     try:
         yield
@@ -74,7 +71,6 @@ async def _ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=_ciclo_de_vida)
 
-# R52: el secreto ya no viaja en la URL, asi que el access log de uvicorn no necesita filtro.
 # R52: en INFO, httpx loguea la URL completa de sus pedidos (ahi va el id real de conversacion)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -179,7 +175,6 @@ async def webhook_chatwoot(
 ) -> dict[str, str] | JSONResponse:
     cuerpo = await _leer_cuerpo_con_tope(request)
     if cuerpo is None:
-        # Seguridad: cuerpo demasiado grande, se corta sin leerlo entero.
         # 413 no dispara reintentos de Chatwoot (R50: solo reintenta 429/500).
         return JSONResponse({"estado": "ignorado"}, status_code=413)
     # R50: siempre 200, nunca se provocan reintentos en bucle
@@ -196,11 +191,7 @@ async def webhook_chatwoot(
         logger.warning("Webhook Chatwoot: account o inbox inesperado")
         return {"estado": "ignorado"}
     alias = alias_conversacion(mensaje.id_conversacion)
-    logger.info(
-        "Webhook Chatwoot: mensaje aceptado alias=%s evento=%s",
-        alias,
-        para_log(mensaje.evento),
-    )
+    logger.info("Webhook Chatwoot: mensaje aceptado alias=%s evento=%s", alias, para_log(mensaje.evento))
     _capturar_payload(cuerpo)
     background_tasks.add_task(_procesar_turno, mensaje, cliente, config, memoria)
     return {"estado": "ok"}
