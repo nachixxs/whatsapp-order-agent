@@ -1,10 +1,10 @@
-"""El pedido: sus campos, las validaciones por campo (R14, R15) y lo que le falta."""
+"""El pedido: sus campos, sus archivos (R29), las validaciones (R14, R15) y lo que le falta."""
 
 import logging
 from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, NaiveDatetime, ValidationInfo, field_validator
 
 from app.config import ConfigNegocio, Texto
 from app.formato import en_una_linea, para_log
@@ -16,8 +16,29 @@ NO_SON_NOMBRES = frozenset({"cliente", "usuario", "desconocido", "sin nombre", "
 # R35: con los siete campos al tope, el resumen queda lejos de los 4.096 de WhatsApp
 TOPE_NOMBRE = 60
 TOPE_CAMPO = 200
+# R35: con 60 archivos y el tipo al tope, la celda queda lejos de los 50.000 caracteres
+TOPE_ARCHIVOS = 60
+TOPE_TIPO = 20
 
 TieneDiseno = Literal["si", "no", "requiere_servicio"]
+
+
+class ArchivoAdjunto(BaseModel):
+    """Un adjunto de Chatwoot. El bot no lo baja y nunca guarda su data_url (R29)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    id_adjunto: int  # attachments[].id
+    id_mensaje: int
+    tipo: str  # la extensión o el file_type, para mostrar
+    tamano: int | None
+    hora: NaiveDatetime  # R29: hora de pared del negocio; con y sin zona no se pueden ordenar
+
+    @field_validator("tipo", mode="before")
+    @classmethod
+    def _tipo_en_una_linea(cls, tipo: object) -> object:
+        # R35: un salto de línea armaría otra línea de archivo en la celda
+        return en_una_linea(tipo)[:TOPE_TIPO] if isinstance(tipo, str) else tipo
 
 
 class Pedido(BaseModel):
@@ -35,7 +56,7 @@ class Pedido(BaseModel):
     medidas: Texto | None = None
     cantidad: Annotated[int, Field(gt=0)] | None = None
     tiene_diseno: TieneDiseno | None = None
-    # archivos (columna 9, R29): tarea 3.3
+    archivos: list[ArchivoAdjunto] = []  # R29: en orden; solo los suma sumar_archivo
     fecha_necesita: date | None = None
 
     @field_validator("nombre_cliente", "producto", "material", "medidas", mode="before")
@@ -101,3 +122,27 @@ def _con_campo(
     if campo == "fecha_necesita" and nuevo.fecha_necesita and nuevo.fecha_necesita < hoy:
         raise ValueError("fecha pasada")
     return nuevo
+
+
+def sumar_archivo(pedido: Pedido, archivo: ArchivoAdjunto) -> Pedido | None:
+    """R29: un pedido nuevo con el archivo sumado y el diseño en "si". None si ya tiene 60 (R35)."""
+    archivos = pedido.archivos
+    if not any(_es_el_mismo(previo, archivo) for previo in archivos):
+        if len(archivos) >= TOPE_ARCHIVOS:
+            return None
+        archivos = sorted([*archivos, archivo], key=lambda a: (a.hora, a.id_mensaje))
+    return pedido.model_copy(update={"archivos": archivos, "tiene_diseno": "si"})
+
+
+def _es_el_mismo(previo: ArchivoAdjunto, archivo: ArchivoAdjunto) -> bool:
+    # R29: la foto reenviada llega con otro id; sin checksum ni nombre, la delatan tipo y tamaño
+    igual = (previo.tipo, previo.tamano) == (archivo.tipo, archivo.tamano)
+    return previo.id_adjunto == archivo.id_adjunto or (archivo.tamano is not None and igual)
+
+
+def texto_de_archivos(pedido: Pedido) -> str:
+    """La celda `archivos`: una línea por archivo, sin link ni data_url (R29)."""
+    return "\n".join(
+        f"{orden}. {archivo.hora:%d/%m %H:%M} · {archivo.tipo} · adjunto #{archivo.id_adjunto}"
+        for orden, archivo in enumerate(pedido.archivos, start=1)
+    )
