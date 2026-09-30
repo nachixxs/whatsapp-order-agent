@@ -1,15 +1,16 @@
 import logging
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
 
 from app.config import ConfigNegocio
-from app.pedidos import Pedido, sumar_campos
+from app.pedidos import ArchivoAdjunto, Pedido, sumar_archivo, sumar_campos, texto_de_archivos
 from app.respuestas import resumen_pedido
 from app.tools import CAMPOS_DEL_PEDIDO, MATERIAL_A_DEFINIR
 from tests.conftest import TELEFONO
 
+HORA = datetime(2026, 9, 29, 14, 32)  # hora de pared del negocio, sin zona
 COMPLETO = {
     "producto": "impresion_digital",
     "material": "papel ilustración 300 g",
@@ -25,6 +26,21 @@ def _sumar(
     config: ConfigNegocio, campos: dict[str, object], pedido: Pedido | None = None
 ) -> tuple[Pedido, list[str]]:
     return sumar_campos(pedido or Pedido(telefono=TELEFONO), campos, config, config.ahora())
+
+
+def _archivo(id_adjunto: int, hora: datetime = HORA, **cambios: object) -> ArchivoAdjunto:
+    # Un tamaño por id: dos del mismo tipo y tamaño son el mismo archivo (R29)
+    datos = {"id_adjunto": id_adjunto, "id_mensaje": id_adjunto, "tamano": 1000 + id_adjunto}
+    return ArchivoAdjunto.model_validate(datos | {"tipo": "pdf", "hora": hora} | cambios)
+
+
+def _con_archivos(*archivos: ArchivoAdjunto, pedido: Pedido | None = None) -> Pedido:
+    pedido = pedido or Pedido(telefono=TELEFONO)
+    for archivo in archivos:
+        nuevo = sumar_archivo(pedido, archivo)
+        assert nuevo is not None
+        pedido = nuevo
+    return pedido
 
 
 def test_con_los_siete_campos_esta_completo(config: ConfigNegocio) -> None:
@@ -195,13 +211,23 @@ def test_valor_invalido_se_descarta_campo_por_campo(
 
 
 def test_ida_y_vuelta_por_json(config: ConfigNegocio) -> None:
-    """SQLite guarda el pedido como JSON; vuelve igual, aunque su fecha ya haya pasado."""
-    pedido, _ = _sumar(config, COMPLETO)
+    """SQLite guarda el pedido como JSON; vuelve igual, con sus archivos y aunque su fecha ya pasó."""
+    completo, _ = _sumar(config, COMPLETO)
+    pedido = _con_archivos(_archivo(1), pedido=completo)
     vencido = pedido.model_copy(update={"fecha_necesita": date(2026, 10, 1)})
     for guardado in (pedido, vencido):
         assert Pedido.model_validate_json(guardado.model_dump_json()) == guardado
         assert Pedido.model_validate(guardado.model_dump(mode="json")) == guardado
     assert pedido.model_dump(mode="json")["fecha_necesita"] == "2026-10-20"
+    assert pedido.model_dump(mode="json")["archivos"][0]["hora"] == "2026-09-29T14:32:00"
+
+
+def test_pedido_guardado_sin_archivos_se_sigue_leyendo(config: ConfigNegocio) -> None:
+    """R26: un pedido guardado antes de la columna archivos se lee con la lista vacía, no se descarta."""
+    pedido, _ = _sumar(config, COMPLETO)
+    leido = Pedido.model_validate_json(pedido.model_dump_json(exclude={"archivos"}))
+    assert leido == pedido
+    assert leido.archivos == []
 
 
 def test_log_y_errores_sin_el_valor(config: ConfigNegocio, caplog: pytest.LogCaptureFixture) -> None:
@@ -215,3 +241,81 @@ def test_log_y_errores_sin_el_valor(config: ConfigNegocio, caplog: pytest.LogCap
     with pytest.raises(ValidationError) as error:
         Pedido(telefono=TELEFONO, nombre_cliente="👍")
     assert "👍" not in str(error.value)
+
+
+def test_los_archivos_se_suman_en_orden_de_hora(config: ConfigNegocio) -> None:
+    """R29: cada archivo se suma sin pisar los anteriores, ordenado por hora aunque llegue desordenado."""
+    uno = _con_archivos(_archivo(3, HORA + timedelta(minutes=5)))
+    tres = _con_archivos(_archivo(1), _archivo(2, HORA + timedelta(minutes=1)), pedido=uno)
+    assert [archivo.id_adjunto for archivo in tres.archivos] == [1, 2, 3]
+    assert [archivo.id_adjunto for archivo in uno.archivos] == [3]
+    despues, _ = _sumar(config, {"cantidad": 10}, tres)
+    assert despues.archivos == tres.archivos
+
+
+def test_a_igual_hora_desempata_el_id_del_mensaje() -> None:
+    """R29: a igual hora, el orden lo da el id del mensaje, no el orden de llegada."""
+    pedido = _con_archivos(_archivo(7, id_mensaje=51), _archivo(8, id_mensaje=50))
+    assert [archivo.id_mensaje for archivo in pedido.archivos] == [50, 51]
+
+
+def test_el_mismo_archivo_dos_veces_no_duplica() -> None:
+    """R29: el mismo adjunto, o la foto reenviada en otro mensaje (mismo tipo y tamaño), no suma otra línea."""
+    primero = _archivo(1, tipo="jpg", tamano=13_666)
+    reenvio = _archivo(2, HORA + timedelta(minutes=4), tipo="jpg", tamano=13_666)
+    assert _con_archivos(primero, primero, reenvio).archivos == [primero]
+
+
+def test_sin_tamano_o_con_otro_tipo_es_otro_archivo() -> None:
+    """R29: sin tamaño no hay con qué compararlos y otro tipo es otro archivo: no se pierde ninguno."""
+    archivos = [_archivo(1, tamano=None), _archivo(2, tamano=None)]
+    archivos += [_archivo(3, tamano=500), _archivo(4, tipo="jpg", tamano=500)]
+    assert _con_archivos(*archivos).archivos == archivos
+
+
+@pytest.mark.parametrize("antes", [None, "no", "requiere_servicio", "si"])
+def test_un_archivo_fuerza_tiene_diseno_si(antes: str | None) -> None:
+    """R29: un archivo pisa el tiene_diseno anterior con "si", también si es repetido."""
+    pedido = Pedido(telefono=TELEFONO, tiene_diseno=antes)
+    con_archivo = _con_archivos(_archivo(1), pedido=pedido)
+    assert con_archivo.tiene_diseno == "si"
+    assert "tiene_diseno" not in con_archivo.faltantes()
+    assert pedido.tiene_diseno == antes
+    repetido = _con_archivos(_archivo(1), pedido=con_archivo.model_copy(update={"tiene_diseno": antes}))
+    assert repetido.tiene_diseno == "si"
+
+
+def test_del_archivo_61_en_adelante_no_se_suman() -> None:
+    """R35: con 60 archivos, uno nuevo no entra (None) y el pedido queda como estaba; un repetido sí pasa."""
+    lleno = _con_archivos(*(_archivo(i) for i in range(1, 61)))
+    assert len(lleno.archivos) == 60
+    assert sumar_archivo(lleno, _archivo(61)) is None
+    assert len(lleno.archivos) == 60
+    assert sumar_archivo(lleno, _archivo(1)) == lleno
+
+
+@pytest.mark.parametrize(
+    "hora", [datetime(2026, 9, 29, 17, 32, tzinfo=UTC), "2026-09-29T17:32:00Z", "2026-09-29T14:32-03:00"]
+)
+def test_hora_con_zona_se_rechaza(hora: datetime | str) -> None:
+    """R29: la hora va sin zona; comparar una con zona contra una sin zona revienta al ordenar."""
+    with pytest.raises(ValidationError):
+        _archivo(1, hora)
+
+
+def test_la_celda_lleva_una_linea_por_archivo() -> None:
+    """R29: una línea por archivo en orden, con hora local, tipo y número de adjunto; nunca el data_url."""
+    pedido = _con_archivos(_archivo(124, HORA + timedelta(minutes=3), tipo="jpg"), _archivo(123))
+    esperado = "1. 29/09 14:32 · pdf · adjunto #123\n2. 29/09 14:35 · jpg · adjunto #124"
+    assert texto_de_archivos(pedido) == esperado
+    assert texto_de_archivos(Pedido(telefono=TELEFONO)) == ""
+    with pytest.raises(ValidationError):
+        _archivo(1, data_url="https://chatwoot.example/rails/active_storage/blobs/redirect/x/foto.jpg")
+
+
+def test_la_celda_de_archivos_no_pasa_50000() -> None:
+    """R35: con 60 archivos, tipos enormes con saltos de línea e ids al tope, la celda tiene 60 líneas."""
+    archivos = [_archivo(2**63 - i, tipo="x\n" * 30_000, tamano=i) for i in range(1, 61)]
+    texto = texto_de_archivos(_con_archivos(*archivos))
+    assert texto.count("\n") == 59
+    assert len(texto) <= 50_000
