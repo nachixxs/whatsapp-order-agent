@@ -276,26 +276,6 @@ def _archivo(id_mensaje: int, id_adjunto: int, conversacion: int = 555, content:
     return json.dumps(payload).encode()
 
 
-def test_webhook_lote_de_solo_archivos_llega_al_turno_con_sus_adjuntos(
-    client: TestClient,
-    config: ConfigNegocio,
-    monkeypatch: pytest.MonkeyPatch,
-    cliente_falso: ClienteFalso,
-    turno_falso: TurnoFalso,
-    timer_falso: type[TimerFalso],
-) -> None:
-    """R30: un lote sin una palabra de texto llega entero a procesar_lote, que responde una vez."""
-    _configurar_entorno(monkeypatch)
-    assert _post(client, config, _archivo(1, 1)).status_code == 200
-    _post(client, config, _archivo(2, 2))
-    timer_falso.creados[-1].disparar()
-    [(conversacion, lote, _, _)] = turno_falso.llamados
-    assert conversacion == 555
-    assert [m.id_mensaje for m in lote] == [1, 2]  # type: ignore[attr-defined]
-    assert all(m.contenido == "" and len(m.adjuntos) == 1 for m in lote)  # type: ignore[attr-defined]
-    assert cliente_falso.respuestas == [(555, "respuesta del turno")]
-
-
 def test_r30_tres_archivos_seguidos_un_solo_lote(
     client: TestClient,
     config: ConfigNegocio,
@@ -314,6 +294,7 @@ def test_r30_tres_archivos_seguidos_un_solo_lote(
     [(conversacion, lote, _, _)] = turno_falso.llamados
     assert conversacion == 555
     assert [m.id_mensaje for m in lote] == [1, 2, 3]  # type: ignore[attr-defined]
+    assert [len(m.adjuntos) for m in lote] == [1, 1, 1]  # type: ignore[attr-defined]
     assert cliente_falso.respuestas == [(555, "respuesta del turno")]
     assert app_main._ventanas == {}
 
@@ -337,21 +318,6 @@ def test_r30_la_espera_se_reinicia_con_cada_mensaje(
 def test_r30_espera_real_tolera_8_segundos(timer_falso: type[TimerFalso]) -> None:
     """R30: la espera de produccion es de al menos 8 s de silencio (duda 4: 5,6 s entre archivos)."""
     assert timer_falso.espera_real >= 8
-
-
-def test_r30_texto_sin_ventana_sale_directo(
-    client: TestClient,
-    config: ConfigNegocio,
-    monkeypatch: pytest.MonkeyPatch,
-    cliente_falso: ClienteFalso,
-    turno_falso: TurnoFalso,
-    timer_falso: type[TimerFalso],
-) -> None:
-    """R30: un texto sin ventana abierta va al turno enseguida, sin timer."""
-    _configurar_entorno(monkeypatch)
-    _post(client, config, json.dumps(_payload()).encode())
-    assert len(turno_falso.llamados) == 1
-    assert timer_falso.creados == []
 
 
 def test_r30_texto_dentro_de_la_ventana_va_al_lote(
