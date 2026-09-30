@@ -109,7 +109,7 @@ def _pedido_para_el_prompt(pedido: Pedido | None) -> str:
             "más, no confirma: llamá a `registrar_pedido` sin ningún campo, y el "
             "sistema le vuelve a mostrar el resumen para que confirme."
         )
-    # archivos (R29): tarea 3.3, con el mismo texto del bot viejo
+    # archivos (R29): la línea en el prompt quedó fuera del CP3
     return "\n".join(lineas)
 
 
