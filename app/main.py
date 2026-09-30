@@ -35,6 +35,7 @@ VARIABLES_CHATWOOT = (
     "CHATWOOT_BOT_TOKEN",
     "CHATWOOT_WEBHOOK_SECRET",
 )
+FORMATO_LOG = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 TOPE_BYTES_BODY = 1_000_000
 TOLERANCIA_SEGUNDOS = 300
 ESPERA_LOTE_SEGUNDOS = 8.0  # R30: silencio que cierra la ventana de una rafaga de archivos
@@ -64,6 +65,8 @@ async def _ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
     if workers_pedidos(sys.argv, os.environ) > 1:
         # R28: dos procesos sobre el mismo archivo SQLite pisan la misma charla
         raise RuntimeError("R28: el bot corre con un solo worker (quitar --workers / WEB_CONCURRENCY)")
+    # No hace nada si el root ya tiene handlers; los loggers de uvicorn no propagan, no se duplican
+    logging.basicConfig(level=logging.INFO, format=FORMATO_LOG)
     app.state.config = cargar_config(RUTA_POR_DEFECTO)
     app.state.memoria = Memoria(os.environ.get("MEMORIA_RUTA") or MEMORIA_RUTA_POR_DEFECTO)
     try:
@@ -167,11 +170,7 @@ def _procesar_turno(
     if id_conversacion is None:
         logger.warning("Webhook Chatwoot: sin id de conversacion, no se responde")
         return
-    # Hasta la 3.4b procesar_lote solo sabe de texto
-    con_texto = [m for m in lote if m.contenido.strip()]
-    if not con_texto:
-        return
-    texto = procesar_lote(id_conversacion, con_texto, config, memoria)
+    texto = procesar_lote(id_conversacion, lote, config, memoria)
     if texto is None:
         return
     try:

@@ -276,7 +276,7 @@ def _archivo(id_mensaje: int, id_adjunto: int, conversacion: int = 555, content:
     return json.dumps(payload).encode()
 
 
-def test_webhook_adjuntos_sin_texto_no_van_al_turno(
+def test_webhook_lote_de_solo_archivos_llega_al_turno_con_sus_adjuntos(
     client: TestClient,
     config: ConfigNegocio,
     monkeypatch: pytest.MonkeyPatch,
@@ -284,12 +284,16 @@ def test_webhook_adjuntos_sin_texto_no_van_al_turno(
     turno_falso: TurnoFalso,
     timer_falso: type[TimerFalso],
 ) -> None:
-    """R30: hasta la 3.4b un lote de solo adjuntos se cierra sin llamar a procesar_lote ni responder."""
+    """R30: un lote sin una palabra de texto llega entero a procesar_lote, que responde una vez."""
     _configurar_entorno(monkeypatch)
     assert _post(client, config, _archivo(1, 1)).status_code == 200
+    _post(client, config, _archivo(2, 2))
     timer_falso.creados[-1].disparar()
-    assert turno_falso.llamados == []
-    assert cliente_falso.respuestas == []
+    [(conversacion, lote, _, _)] = turno_falso.llamados
+    assert conversacion == 555
+    assert [m.id_mensaje for m in lote] == [1, 2]  # type: ignore[attr-defined]
+    assert all(m.contenido == "" and len(m.adjuntos) == 1 for m in lote)  # type: ignore[attr-defined]
+    assert cliente_falso.respuestas == [(555, "respuesta del turno")]
 
 
 def test_r30_tres_archivos_seguidos_un_solo_lote(
@@ -309,7 +313,7 @@ def test_r30_tres_archivos_seguidos_un_solo_lote(
     timer_falso.creados[-1].disparar()
     [(conversacion, lote, _, _)] = turno_falso.llamados
     assert conversacion == 555
-    assert [m.id_mensaje for m in lote] == [1]  # type: ignore[attr-defined]  # solo el que tiene texto
+    assert [m.id_mensaje for m in lote] == [1, 2, 3]  # type: ignore[attr-defined]
     assert cliente_falso.respuestas == [(555, "respuesta del turno")]
     assert app_main._ventanas == {}
 
@@ -364,7 +368,8 @@ def test_r30_texto_dentro_de_la_ventana_va_al_lote(
     assert turno_falso.llamados == []
     timer_falso.creados[-1].disparar()
     [(_, lote, _, _)] = turno_falso.llamados
-    assert [m.contenido for m in lote] == ["es para tarjetas"]  # type: ignore[attr-defined]
+    assert [m.contenido for m in lote] == ["", "es para tarjetas"]  # type: ignore[attr-defined]
+    assert [len(m.adjuntos) for m in lote] == [1, 0]  # type: ignore[attr-defined]
 
 
 def test_r30_las_ventanas_son_por_conversacion(
@@ -461,6 +466,27 @@ def test_r28_con_mas_de_un_worker_el_servidor_no_arranca(
     monkeypatch.setenv("WEB_CONCURRENCY", "1")
     with TestClient(app):
         assert (tmp_path / "m.db").exists()  # R54: la memoria se abre al arrancar
+
+
+def test_el_arranque_enciende_los_logs_info_de_la_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Bajo uvicorn el root no tiene handler y los INFO de la app no salen; el lifespan los enciende."""
+    monkeypatch.setattr("sys.argv", ["uvicorn", "app.main:app"])
+    monkeypatch.setattr("app.main.RUTA_POR_DEFECTO", Path(__file__).resolve().parent.parent / "config" / "negocio.ejemplo.json")
+    monkeypatch.setenv("MEMORIA_RUTA", str(tmp_path / "m.db"))
+    monkeypatch.delenv("WEB_CONCURRENCY", raising=False)
+    raiz = logging.getLogger()
+    handlers, nivel = raiz.handlers[:], raiz.level
+    raiz.handlers.clear()  # pytest instala los suyos; basicConfig no hace nada si hay alguno
+    raiz.setLevel(logging.WARNING)
+    try:
+        with TestClient(app):
+            assert raiz.level == logging.INFO
+            assert len(raiz.handlers) == 1
+            assert "%(name)s" in raiz.handlers[0].formatter._fmt  # type: ignore[union-attr]
+        assert logging.getLogger("httpx").level == logging.WARNING  # R52
+    finally:
+        raiz.handlers[:] = handlers
+        raiz.setLevel(nivel)
 
 
 def test_webhook_body_gigante_se_corta_sin_provocar_reintento(
