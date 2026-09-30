@@ -41,7 +41,7 @@ def carrera(
     derivar_a_asesor y un registrar_pedido con otros datos es un pedido nuevo."""
     argumentos = decision.argumentos if isinstance(decision, Decision) else None
     if isinstance(argumentos, ConfirmarPedido) and not argumentos.acepta:  # un rechazo cambia, como en el viejo
-        return Salida("cambio_sobre_pedido_confirmado", MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION)
+        return Salida("cambio_sobre_pedido_confirmado", MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION, error=True)
     if isinstance(argumentos, RegistrarPedido):
         campos = argumentos.model_dump(exclude={"nombre_cliente"})  # el nombre no es un cambio
         pedido, _ = sumar_campos(confirmado, campos, config, ahora)  # por valor; un descartado no cambia nada

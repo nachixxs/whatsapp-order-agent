@@ -249,6 +249,20 @@ def test_un_rechazo_sobre_el_confirmado_es_un_cambio(memoria: Memoria, config: C
     assert _historial(memoria)[-1] == "[cambio_sobre_pedido_confirmado]"
 
 
+def test_el_acuse_del_archivo_no_tapa_un_cambio_sobre_el_confirmado(
+    memoria: Memoria, config: ConfigNegocio
+) -> None:
+    """R6, R30, R32: una foto con "no, esperá" sobre el confirmado: el cliente recibe el aviso del cambio, no
+    el acuse del archivo, y en el historial queda el marcador del cambio."""
+    _confirmado(memoria, config)
+    lote = [_mensaje("no, esperá", adjuntos=[_adjunto("image", "jpg")])]
+
+    texto = procesar_lote(CONV, lote, config, memoria, _Agente(_confirmar(False)), _Planilla())
+
+    assert texto == MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION
+    assert _historial(memoria) == ["no, esperá", "[cambio_sobre_pedido_confirmado]"]
+
+
 def test_el_pedido_recien_confirmado_va_al_prompt(memoria: Memoria, config: ConfigNegocio) -> None:
     """R7: después de confirmar, decidir recibe el pedido confirmado y ningún pedido en curso."""
     confirmado = _confirmado(memoria, config)
