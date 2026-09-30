@@ -9,9 +9,15 @@ from app.config import ConfigNegocio, Franja, Horario
 from app.pedidos import Pedido
 from app.respuestas import (
     AVISO_MATERIAL_A_DEFINIR,
+    MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION,
+    MENSAJE_ERROR_AL_GUARDAR,
     MENSAJE_ERROR_INTERNO,
     MENSAJE_NO_ENTENDIDO,
+    MENSAJE_PEDIDO_CONFIRMADO,
     MENSAJE_PEDIDO_RECHAZADO,
+    MENSAJE_TIPO_NO_SOPORTADO,
+    acuse_de_archivos,
+    acuse_de_archivos_despues_de_confirmar,
     aviso_de_descartados,
     con_aviso_de_material,
     fecha_en_palabras,
@@ -58,9 +64,13 @@ def _con(config: ConfigNegocio, **cambios: object) -> ConfigNegocio:
 
 
 def _todos_los_textos(config: ConfigNegocio) -> list[str]:
+    """Todos menos MENSAJE_PEDIDO_CONFIRMADO, que tiene su propio test contra PROHIBIDAS."""
     variantes = [config, _con(config, hace_envios=True, tiene_estacionamiento=True)]
     return [
         MENSAJE_NO_ENTENDIDO, MENSAJE_ERROR_INTERNO, MENSAJE_PEDIDO_RECHAZADO, AVISO_MATERIAL_A_DEFINIR,
+        MENSAJE_ERROR_AL_GUARDAR, MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION, MENSAJE_TIPO_NO_SOPORTADO,
+        *(acuse_de_archivos(n, p, config) for n in (1, 3) for p in (_pedido(), _pedido(medidas=None))),
+        *(acuse_de_archivos_despues_de_confirmar(n) for n in (1, 3)),
         *(respuesta_faq(tema, c) for tema in TEMAS_CONSULTA for c in variantes),
         *(pregunta_por_dato(dato, config) for dato in CAMPOS_DEL_PEDIDO),
         *(resumen_pedido(_pedido(tiene_diseno=estado), config) for estado in ESTADOS_DISENO),
@@ -350,6 +360,95 @@ def test_sin_stock_no_ofrece_alternativas(config: ConfigNegocio) -> None:
     for producto in config.catalogo:
         for nombre in (producto.familia, *producto.ejemplos):
             assert nombre.casefold() not in texto
+
+
+# Confirmación y archivos
+
+
+def test_confirmacion_literal() -> None:
+    """R2: el único texto con "¡Listo!", literal del bot anterior."""
+    assert MENSAJE_PEDIDO_CONFIRMADO == (
+        "¡Listo! Ya guardamos tus datos. Un asesor se contactará para confirmar el pago y la entrega."
+    )
+
+
+def test_confirmacion_nombra_la_entrega_solo_para_dejarla_al_asesor() -> None:
+    """R19: de PROHIBIDAS, la confirmación solo tiene "¡listo" y "entreg", y la entrega la ve el asesor (R38)."""
+    texto = MENSAJE_PEDIDO_CONFIRMADO.casefold()
+    assert [patron for patron in PROHIBIDAS if re.search(patron, texto)] == [r"\bentreg", r"¡listo"]
+    assert "un asesor se contactará para confirmar el pago y la entrega" in texto
+
+
+def test_error_al_guardar_no_confirma_e_invita_a_reintentar() -> None:
+    """R2: con la planilla caída el cliente lee que no se guardó y que vuelva a escribir."""
+    assert MENSAJE_ERROR_AL_GUARDAR == (
+        "Tengo todos tus datos pero no los pude guardar bien. Escribime de nuevo en unos minutos así no "
+        "se pierde nada."
+    )
+
+
+def test_acuse_de_un_archivo_con_el_pedido_incompleto(config: ConfigNegocio) -> None:
+    """R30: un archivo, un acuse que sigue con los datos que faltan."""
+    assert acuse_de_archivos(1, _pedido(medidas=None), config) == (
+        "¡Recibí tu archivo! Ya queda guardado con tu pedido y un asesor lo va a revisar. "
+        "¿Seguimos con los datos?"
+    )
+
+
+def test_acuse_de_una_rafaga_es_uno_con_la_cantidad(config: ConfigNegocio) -> None:
+    """R30: tres archivos seguidos, un solo acuse que dice cuántos llegaron."""
+    texto = acuse_de_archivos(3, _pedido(medidas=None), config)
+    assert texto == (
+        "¡Recibí tus 3 archivos! Ya quedan guardados con tu pedido y un asesor los va a revisar. "
+        "¿Seguimos con los datos?"
+    )
+    assert texto.count("¡Recibí") == 1
+
+
+def test_acuse_con_el_pedido_completo_sigue_con_el_resumen(config: ConfigNegocio) -> None:
+    """R31: si el archivo completó el pedido, al acuse lo sigue el resumen, no "¿seguimos?"."""
+    pedido = _pedido()
+    assert acuse_de_archivos(1, pedido, config) == (
+        "¡Recibí tu archivo! Ya queda guardado con tu pedido y un asesor lo va a revisar.\n\n"
+        f"{resumen_pedido(pedido, config)}"
+    )
+
+
+def test_acuse_sin_archivos_lanza(config: ConfigNegocio) -> None:
+    """R30: un acuse es por al menos un archivo; nunca "Recibí tus 0 archivos"."""
+    with pytest.raises(ValueError):
+        acuse_de_archivos(0, _pedido(), config)
+    with pytest.raises(ValueError):
+        acuse_de_archivos_despues_de_confirmar(0)
+
+
+@pytest.mark.parametrize(
+    ("recibidos", "texto"),
+    [
+        (1, "¡Recibí tu archivo! Tu pedido ya estaba confirmado, así que se lo paso al asesor para que lo sume."),
+        (3, "¡Recibí tus 3 archivos! Tu pedido ya estaba confirmado, así que se los paso al asesor para que "
+            "los sume."),
+    ],
+)
+def test_acuse_despues_de_confirmar_no_dice_guardado(recibidos: int, texto: str) -> None:
+    """R32: el archivo no toca la fila: el acuse no dice "guardado" y se lo pasa al asesor."""
+    assert acuse_de_archivos_despues_de_confirmar(recibidos) == texto
+    assert "guardad" not in texto
+
+
+def test_cambio_durante_la_confirmacion() -> None:
+    """R6: un cambio sobre el pedido que se estaba confirmando lo ve un asesor."""
+    assert MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION == (
+        "Ese pedido ya lo estaba confirmando, así que un cambio lo tiene que ver un asesor con vos."
+    )
+
+
+def test_tipo_no_soportado_tiene_respuesta_fija() -> None:
+    """R36: audio, sticker o ubicación reciben una respuesta fija que ofrece escribir o mandar documento."""
+    assert MENSAJE_TIPO_NO_SOPORTADO == (
+        "Por ahora solo puedo leer mensajes de texto. Si querés, escribime lo que necesitás y seguimos, "
+        "o mandame el diseño como documento."
+    )
 
 
 # Todos los textos
