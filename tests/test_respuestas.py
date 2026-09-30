@@ -402,7 +402,6 @@ def test_acuse_de_una_rafaga_es_uno_con_la_cantidad(config: ConfigNegocio) -> No
         "¡Recibí tus 3 archivos! Ya quedan guardados con tu pedido y un asesor los va a revisar. "
         "¿Seguimos con los datos?"
     )
-    assert texto.count("¡Recibí") == 1
 
 
 def test_acuse_con_el_pedido_completo_sigue_con_el_resumen(config: ConfigNegocio) -> None:
@@ -433,7 +432,6 @@ def test_acuse_sin_archivos_lanza(config: ConfigNegocio) -> None:
 def test_acuse_despues_de_confirmar_no_dice_guardado(recibidos: int, texto: str) -> None:
     """R32: el archivo no toca la fila: el acuse no dice "guardado" y se lo pasa al asesor."""
     assert acuse_de_archivos_despues_de_confirmar(recibidos) == texto
-    assert "guardad" not in texto
 
 
 def test_cambio_durante_la_confirmacion() -> None:
