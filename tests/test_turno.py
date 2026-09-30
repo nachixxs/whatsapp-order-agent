@@ -749,6 +749,19 @@ def test_si_el_ultimo_del_lote_es_un_texto_responde_el_texto(memoria: Memoria, c
     assert _historial(memoria) == ["¿dónde están?", "[consulta_general: direccion]"]
 
 
+def test_una_derivacion_no_la_tapa_el_acuse_del_archivo(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R15, R30: una foto con "¿la tienen en lona blanca?" deriva por sin_stock; el acuse no tapa la
+    derivación, ni al cliente ni en el historial, y el archivo igual queda en el pedido."""
+    sin_stock = Decision("derivar_a_asesor", DerivarAAsesor(motivo="sin_stock"))
+    mensaje = _mensaje("¿la tienen en lona blanca?", adjuntos=[_adjunto("image", "jpg")])
+
+    texto = procesar_lote(CONV, [mensaje], config, memoria, _Agente(sin_stock), _Planilla())
+
+    assert texto == texto_derivacion("sin_stock", config)
+    assert _historial(memoria) == ["¿la tienen en lona blanca?", "[derivado_a_asesor: sin_stock]"]
+    assert len(_pedido(memoria).archivos) == 1
+
+
 def test_un_archivo_despues_de_confirmar_no_toca_la_fila(memoria: Memoria, config: ConfigNegocio) -> None:
     """R32: con el pedido recién confirmado, el archivo no toca la fila ni arranca otro pedido; el acuse no
     dice "guardado"."""

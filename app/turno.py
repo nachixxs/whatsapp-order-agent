@@ -155,7 +155,7 @@ def _elegir(
     config: ConfigNegocio, memoria: Memoria, ahora: datetime,
 ) -> Salida:
     """R30: una respuesta por lote. Como el bot viejo: la confirmación exitosa gana (R3), después un error
-    (ningún acuse tapa el de un archivo) y, si no, responde el último mensaje."""
+    o una derivación (ningún acuse los tapa) y, si no, responde el último mensaje."""
     if texto is not None and texto.camino == CONFIRMADO:
         return texto
     for salida in (archivos, texto):
@@ -218,8 +218,8 @@ def _aplicar(
         return Salida(f"consulta_general: {tema}", respuesta_faq(tema, config))
     if isinstance(argumentos, DerivarAAsesor):
         # R47 (CP4): acá se deriva en Chatwoot: la conversación pasa a una persona, con la nota interna
-        motivo = argumentos.motivo
-        return Salida(f"derivado_a_asesor: {motivo}", texto_derivacion(motivo, config))
+        motivo = argumentos.motivo  # R15, R30: como un error, ningún acuse del lote tapa la derivación
+        return Salida(f"derivado_a_asesor: {motivo}", texto_derivacion(motivo, config), error=True)
     return _confirmar(argumentos, charla.pedido)
 
 
