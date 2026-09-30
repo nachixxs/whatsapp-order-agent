@@ -22,6 +22,25 @@ MENSAJE_PEDIDO_RECHAZADO = (
 AVISO_MATERIAL_A_DEFINIR = (
     "El material lo confirma un asesor cuando cotiza, así que lo dejamos a definir."
 )
+# R2: sale solo con la fila escrita. Es el único texto con "¡Listo!"
+MENSAJE_PEDIDO_CONFIRMADO = (
+    "¡Listo! Ya guardamos tus datos. Un asesor se contactará para confirmar "
+    "el pago y la entrega."
+)
+# R2: el pedido sigue pendiente y el mensaje siguiente reintenta la escritura
+MENSAJE_ERROR_AL_GUARDAR = (
+    "Tengo todos tus datos pero no los pude guardar bien. Escribime de nuevo en "
+    "unos minutos así no se pierde nada."
+)
+# R6. R38 (tarea 4.4): detrás va la frase de horario
+MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION = (
+    "Ese pedido ya lo estaba confirmando, así que un cambio lo tiene que ver un asesor con vos."
+)
+# R36: audio, sticker o ubicación
+MENSAJE_TIPO_NO_SOPORTADO = (
+    "Por ahora solo puedo leer mensajes de texto. Si querés, escribime lo que "
+    "necesitás y seguimos, o mandame el diseño como documento."
+)
 
 _PREGUNTAS: dict[str, str] = {
     # R15: la salida para el que no sabe es la que el prompt espera tras [dato_faltante: material]
@@ -176,7 +195,6 @@ def resumen_pedido(pedido: Pedido, config: ConfigNegocio) -> str:
         f"- Medidas: {pedido.medidas}",
         f"- Cantidad: {pedido.cantidad}",
         f"- Diseño: {_DISENO_EN_EL_RESUMEN[pedido.tiene_diseno]}",
-        # R29: la línea de archivos va acá, entre el diseño y la fecha (tarea 3.3)
         f"- Lo necesitás para el {fecha_en_palabras(pedido.fecha_necesita)}",
         "¿Está todo bien? Confirmame y se lo paso a un asesor, que te va a "
         "pasar el precio y el plazo.",
@@ -188,3 +206,34 @@ def texto_derivacion(motivo: str, config: ConfigNegocio) -> str:
     # R38 (tarea 4.4): después del motivo va la frase de horario, "te contacta un asesor" en
     # horario o cuándo reabre fuera, con la config y `ahora`. Nunca "en breve"
     return _MOTIVO_EN_TEXTO[motivo]
+
+
+def acuse_de_archivos(recibidos: int, pedido: Pedido, config: ConfigNegocio) -> str:
+    """R30: un acuse por ráfaga, con los recibidos. R31: si el pedido quedó completo, sigue el resumen."""
+    if recibidos < 1:
+        raise ValueError("un acuse es por al menos un archivo")
+    if recibidos == 1:
+        acuse = "¡Recibí tu archivo! Ya queda guardado con tu pedido y un asesor lo va a revisar."
+    else:
+        acuse = (
+            f"¡Recibí tus {recibidos} archivos! Ya quedan guardados con tu pedido y "
+            "un asesor los va a revisar."
+        )
+    if pedido.completo:
+        return f"{acuse}\n\n{resumen_pedido(pedido, config)}"
+    return f"{acuse} ¿Seguimos con los datos?"
+
+
+def acuse_de_archivos_despues_de_confirmar(recibidos: int) -> str:
+    """R32: el archivo no toca la fila, así que no dice "guardado": lo suma una persona."""
+    if recibidos < 1:
+        raise ValueError("un acuse es por al menos un archivo")
+    if recibidos == 1:
+        return (
+            "¡Recibí tu archivo! Tu pedido ya estaba confirmado, así que se lo "
+            "paso al asesor para que lo sume."
+        )
+    return (
+        f"¡Recibí tus {recibidos} archivos! Tu pedido ya estaba confirmado, así "
+        "que se los paso al asesor para que los sume."
+    )

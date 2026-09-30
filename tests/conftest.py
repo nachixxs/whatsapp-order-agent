@@ -6,7 +6,7 @@ import pytest
 
 from app.config import RAIZ, ConfigNegocio, cargar_config
 
-PREFIJOS_CON_CREDENCIALES = ("CHATWOOT_", "ANTHROPIC_", "GOOGLE_")
+PREFIJOS_CON_CREDENCIALES = ("CHATWOOT_", "ANTHROPIC_", "GOOGLE_", "SHEET_")
 TELEFONO = "+54 9 11 5555-0000"
 # Martes hábil, dentro del horario de Imprenta Ejemplo
 HORA_DE_PRUEBA = datetime(2026, 10, 6, 10, 0, tzinfo=ZoneInfo("America/Argentina/Buenos_Aires"))

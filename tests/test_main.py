@@ -9,6 +9,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+import app.main as app_main
 from app.chatwoot import ClienteChatwoot
 from app.config import ConfigNegocio
 from app.main import app, get_cliente_chatwoot, get_config, get_memoria, workers_pedidos
@@ -60,6 +61,39 @@ def turno_falso(monkeypatch: pytest.MonkeyPatch) -> TurnoFalso:
     falso = TurnoFalso()
     monkeypatch.setattr("app.main.procesar_lote", falso)
     return falso
+
+
+class TimerFalso:
+    """Reemplaza a threading.Timer: no espera, el test lo dispara con `disparar()`."""
+
+    creados: list["TimerFalso"] = []
+    espera_real: float = 0.0
+
+    def __init__(self, intervalo: float, funcion: object, args: tuple[object, ...]) -> None:
+        self.intervalo, self.funcion, self.args = intervalo, funcion, args
+        self.cancelado = False
+        self.daemon = False
+        TimerFalso.creados.append(self)
+
+    def start(self) -> None:
+        pass
+
+    def cancel(self) -> None:
+        self.cancelado = True
+
+    def disparar(self) -> None:
+        self.funcion(*self.args)  # type: ignore[operator]
+
+
+@pytest.fixture(autouse=True)
+def timer_falso(monkeypatch: pytest.MonkeyPatch) -> type[TimerFalso]:
+    TimerFalso.creados = []
+    TimerFalso.espera_real = app_main.ESPERA_LOTE_SEGUNDOS
+    monkeypatch.setattr("app.main.threading.Timer", TimerFalso)
+    monkeypatch.setattr("app.main.ESPERA_LOTE_SEGUNDOS", 0.01)
+    app_main._ventanas.clear()
+    yield TimerFalso
+    app_main._ventanas.clear()
 
 
 @pytest.fixture
@@ -234,19 +268,109 @@ def test_webhook_firma_mala_no_llega_al_turno(
     assert cliente_falso.respuestas == []
 
 
-def test_webhook_adjuntos_sin_texto_no_van_al_turno(
+def _archivo(id_mensaje: int, id_adjunto: int, conversacion: int = 555, content: str | None = None) -> bytes:
+    adjunto = {"id": id_adjunto, "file_type": "image", "data_url": "https://chatwoot.local/rails/secreto-firmado"}
+    payload = _payload(
+        id=id_mensaje, content=content, attachments=[adjunto], conversation={"id": conversacion, "status": "open"}
+    )
+    return json.dumps(payload).encode()
+
+
+def test_r30_tres_archivos_seguidos_un_solo_lote(
     client: TestClient,
     config: ConfigNegocio,
     monkeypatch: pytest.MonkeyPatch,
     cliente_falso: ClienteFalso,
     turno_falso: TurnoFalso,
+    timer_falso: type[TimerFalso],
 ) -> None:
-    """Hasta la tarea 3.3, un mensaje de solo adjuntos no entra al turno ni recibe respuesta."""
+    """R30: tres archivos (uno con epigrafe) esperan y salen en un solo procesar_lote, con un solo acuse."""
     _configurar_entorno(monkeypatch)
-    payload = _payload(content="", attachments=[{"id": 1}, {"id": 2}])
-    assert _post(client, config, json.dumps(payload).encode()).status_code == 200
+    _post(client, config, _archivo(1, 1, content="mis fotos"))
+    _post(client, config, _archivo(2, 2))
+    _post(client, config, _archivo(3, 3))
+    assert turno_falso.llamados == []  # nada sale antes del silencio
+    timer_falso.creados[-1].disparar()
+    [(conversacion, lote, _, _)] = turno_falso.llamados
+    assert conversacion == 555
+    assert [m.id_mensaje for m in lote] == [1, 2, 3]  # type: ignore[attr-defined]
+    assert [len(m.adjuntos) for m in lote] == [1, 1, 1]  # type: ignore[attr-defined]
+    assert cliente_falso.respuestas == [(555, "respuesta del turno")]
+    assert app_main._ventanas == {}
+
+
+def test_r30_la_espera_se_reinicia_con_cada_mensaje(
+    client: TestClient,
+    config: ConfigNegocio,
+    monkeypatch: pytest.MonkeyPatch,
+    timer_falso: type[TimerFalso],
+) -> None:
+    """R30: cada archivo nuevo cancela el timer anterior y arma otro con la espera completa."""
+    _configurar_entorno(monkeypatch)
+    for i in (1, 2, 3):
+        _post(client, config, _archivo(i, i))
+    timers = timer_falso.creados
+    assert len(timers) == 3
+    assert [t.cancelado for t in timers] == [True, True, False]
+    assert {t.intervalo for t in timers} == {0.01}  # la constante inyectada
+
+
+def test_r30_espera_real_tolera_8_segundos(timer_falso: type[TimerFalso]) -> None:
+    """R30: la espera de produccion es de al menos 8 s de silencio (duda 4: 5,6 s entre archivos)."""
+    assert timer_falso.espera_real >= 8
+
+
+def test_r30_texto_dentro_de_la_ventana_va_al_lote(
+    client: TestClient,
+    config: ConfigNegocio,
+    monkeypatch: pytest.MonkeyPatch,
+    turno_falso: TurnoFalso,
+    timer_falso: type[TimerFalso],
+) -> None:
+    """R30: un texto con la ventana abierta espera y sale junto con los archivos."""
+    _configurar_entorno(monkeypatch)
+    _post(client, config, _archivo(1, 1))
+    _post(client, config, json.dumps(_payload(id=2, content="es para tarjetas")).encode())
     assert turno_falso.llamados == []
-    assert cliente_falso.respuestas == []
+    timer_falso.creados[-1].disparar()
+    [(_, lote, _, _)] = turno_falso.llamados
+    assert [m.contenido for m in lote] == ["", "es para tarjetas"]  # type: ignore[attr-defined]
+    assert [len(m.adjuntos) for m in lote] == [1, 0]  # type: ignore[attr-defined]
+
+
+def test_r30_las_ventanas_son_por_conversacion(
+    client: TestClient,
+    config: ConfigNegocio,
+    monkeypatch: pytest.MonkeyPatch,
+    turno_falso: TurnoFalso,
+    timer_falso: type[TimerFalso],
+) -> None:
+    """R30: un texto de otra conversacion no cae en la ventana abierta de la primera."""
+    _configurar_entorno(monkeypatch)
+    _post(client, config, _archivo(1, 1, conversacion=555))
+    otro = _payload(id=9, conversation={"id": 777, "status": "open"})
+    _post(client, config, json.dumps(otro).encode())
+    assert [c for c, *_ in turno_falso.llamados] == [777]
+
+
+def test_r52_data_url_no_aparece_en_el_log(
+    client: TestClient,
+    config: ConfigNegocio,
+    monkeypatch: pytest.MonkeyPatch,
+    turno_falso: TurnoFalso,
+    timer_falso: type[TimerFalso],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R52 y R29: ni el data_url, ni el texto, ni el id de conversacion aparecen en el log del lote."""
+    _configurar_entorno(monkeypatch)
+    turno_falso.texto = None
+    with caplog.at_level(logging.DEBUG):
+        _post(client, config, _archivo(1, 1, content="texto del cliente"))
+        timer_falso.creados[-1].disparar()
+    texto = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("app."))
+    assert "secreto-firmado" not in texto
+    assert "texto del cliente" not in texto
+    assert "555" not in texto
 
 
 def test_webhook_falla_al_responder_se_loguea_sin_valores_y_da_200(
@@ -308,6 +432,27 @@ def test_r28_con_mas_de_un_worker_el_servidor_no_arranca(
     monkeypatch.setenv("WEB_CONCURRENCY", "1")
     with TestClient(app):
         assert (tmp_path / "m.db").exists()  # R54: la memoria se abre al arrancar
+
+
+def test_el_arranque_enciende_los_logs_info_de_la_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Bajo uvicorn el root no tiene handler y los INFO de la app no salen; el lifespan los enciende."""
+    monkeypatch.setattr("sys.argv", ["uvicorn", "app.main:app"])
+    monkeypatch.setattr("app.main.RUTA_POR_DEFECTO", Path(__file__).resolve().parent.parent / "config" / "negocio.ejemplo.json")
+    monkeypatch.setenv("MEMORIA_RUTA", str(tmp_path / "m.db"))
+    monkeypatch.delenv("WEB_CONCURRENCY", raising=False)
+    raiz = logging.getLogger()
+    handlers, nivel = raiz.handlers[:], raiz.level
+    raiz.handlers.clear()  # pytest instala los suyos; basicConfig no hace nada si hay alguno
+    raiz.setLevel(logging.WARNING)
+    try:
+        with TestClient(app):
+            assert raiz.level == logging.INFO
+            assert len(raiz.handlers) == 1
+            assert "%(name)s" in raiz.handlers[0].formatter._fmt  # type: ignore[union-attr]
+        assert logging.getLogger("httpx").level == logging.WARNING  # R52
+    finally:
+        raiz.handlers[:] = handlers
+        raiz.setLevel(nivel)
 
 
 def test_webhook_body_gigante_se_corta_sin_provocar_reintento(

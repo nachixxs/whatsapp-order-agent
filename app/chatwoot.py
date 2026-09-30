@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -20,6 +21,15 @@ class Contacto(BaseModel):
     telefono: str | None = None
 
 
+class Adjunto(BaseModel):
+    """Sin `data_url`: no hace falta y nunca va al log (R29, R52)."""
+
+    id: int
+    tipo: str
+    extension: str | None = None
+    tamano: int | None = None
+
+
 class MensajeEntrante(BaseModel):
     """Lo que el bot necesita de un webhook de Chatwoot ya filtrado (R48)."""
 
@@ -28,7 +38,8 @@ class MensajeEntrante(BaseModel):
     evento: str
     id_mensaje: int | None = None
     contenido: str = ""
-    cantidad_adjuntos: int = 0
+    adjuntos: list[Adjunto] = []
+    creado: datetime | None = None
     id_conversacion: int | None = None
     account_id: int | None = None
     inbox_id: int | None = None
@@ -39,7 +50,7 @@ class MensajeEntrante(BaseModel):
 def _entero(valor: object) -> int | None:
     try:
         return int(valor)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -60,17 +71,41 @@ def _como_dict(valor: object) -> dict[str, Any]:
     return valor if isinstance(valor, dict) else {}
 
 
+def _adjunto(crudo: object) -> Adjunto | None:
+    datos = _como_dict(crudo)
+    id_adjunto = _entero(datos.get("id"))
+    if id_adjunto is None:
+        return None
+    return Adjunto(
+        id=id_adjunto,
+        tipo=_texto(datos.get("file_type")),
+        extension=_texto(datos.get("extension")) or None,
+        tamano=_entero(datos.get("file_size")),
+    )
+
+
+def _creado(valor: object) -> datetime | None:
+    """R29: el created_at del mensaje en UTC; si falta o es invalido, None (se usa la hora de llegada)."""
+    try:
+        fecha = datetime.fromisoformat(valor)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return fecha.astimezone(UTC) if fecha.tzinfo else fecha.replace(tzinfo=UTC)
+
+
 def _armar_mensaje(crudo: dict[str, Any]) -> MensajeEntrante:
     conversacion = _como_dict(crudo.get("conversation"))
     account = _como_dict(crudo.get("account"))
     inbox = _como_dict(crudo.get("inbox"))
     sender = _como_dict(crudo.get("sender"))
     adjuntos = crudo.get("attachments")
+    adjuntos = adjuntos if isinstance(adjuntos, list) else []
     return MensajeEntrante(
         evento=_texto(crudo.get("event")) or "message_created",
         id_mensaje=_entero(crudo.get("id")),
         contenido=_texto(crudo.get("content")),
-        cantidad_adjuntos=len(adjuntos) if isinstance(adjuntos, list) else 0,
+        adjuntos=[a for a in map(_adjunto, adjuntos) if a is not None],
+        creado=_creado(crudo.get("created_at")),
         id_conversacion=_entero(conversacion.get("id")),
         account_id=_entero(account.get("id")),
         inbox_id=_entero(inbox.get("id")),

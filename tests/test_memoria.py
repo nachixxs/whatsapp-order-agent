@@ -8,14 +8,15 @@ from pathlib import Path
 import pytest
 
 from app.memoria import (
+    HUERFANA,
     RETENCION_GENERACIONES,
     RETENCION_PROCESADOS,
     TOPE_MENSAJES,
     TTL_CHARLA,
-    Charla,
     ErrorMemoria,
     Memoria,
     Mensaje,
+    Toma,
 )
 from app.pedidos import Pedido
 from tests.conftest import TELEFONO
@@ -23,10 +24,14 @@ from tests.conftest import TELEFONO
 ZONA = timezone(timedelta(hours=-3))
 T0 = datetime(2026, 9, 28, 10, 0, tzinfo=ZONA)
 UN_SEGUNDO = timedelta(seconds=1)
+UNA_HORA = timedelta(hours=1)
 CONV = 555
 ID_MENSAJE = 101
 PEDIDO = Pedido(
     telefono=TELEFONO, producto="impresion_digital", cantidad=100, fecha_necesita=date(2026, 10, 9)
+)
+COMPLETO = PEDIDO.model_copy(
+    update={"nombre_cliente": "Ana Prueba", "material": "obra 90 g", "medidas": "A5", "tiene_diseno": "si"}
 )
 
 
@@ -63,6 +68,14 @@ def _hacer_fallar(ruta: Path, operacion: str) -> None:
 def _bytes_en_disco(ruta: Path) -> bytes:
     wal = ruta.with_name(ruta.name + "-wal")
     return ruta.read_bytes() + (wal.read_bytes() if wal.exists() else b"")
+
+
+def _tomar(memoria: Memoria) -> Toma:
+    """El resumen de un pedido completo y el "sí" que lo toma, en una memoria recién abierta."""
+    memoria.guardar_pedido(CONV, COMPLETO, 0, T0)
+    toma = memoria.tomar_para_confirmar(CONV, T0)
+    assert toma is not None
+    return toma
 
 
 # R21 · historial con marcadores
@@ -131,21 +144,13 @@ def test_anotar_en_una_charla_vencida_arranca_de_cero(memoria: Memoria) -> None:
     assert charla.pedido is None
 
 
-def test_cerrar_la_charla_borra_el_historial(memoria: Memoria) -> None:
-    """R22: al confirmar se cierra la charla; el próximo mensaje arranca limpio."""
-    memoria.anotar_cliente(CONV, "sí", T0)
-
-    memoria.cerrar_charla(CONV, T0)
-
-    assert memoria.leer_charla(CONV, T0) == Charla()
-
-
-def test_cerrar_la_charla_conserva_el_pedido_nacido_durante_la_escritura(memoria: Memoria) -> None:
-    """R22: un pedido que nació durante la escritura se conserva al cerrar."""
+def test_confirmar_conserva_el_pedido_nacido_durante_la_escritura(memoria: Memoria) -> None:
+    """R22: un pedido que nació durante la escritura se conserva al cerrar, sin el historial."""
+    toma = _tomar(memoria)
     memoria.anotar_cliente(CONV, "también quiero volantes", T0)
-    memoria.guardar_pedido(CONV, PEDIDO, 0, T0)
+    memoria.guardar_pedido(CONV, PEDIDO, toma.generacion, T0)
 
-    memoria.cerrar_charla(CONV, T0)
+    memoria.confirmar_escrito(CONV, toma, T0)
     charla = memoria.leer_charla(CONV, T0)
 
     assert charla.mensajes == [] and charla.pedido == PEDIDO
@@ -172,8 +177,7 @@ def test_un_id_desmarcado_se_vuelve_a_procesar(memoria: Memoria) -> None:
 def test_cerrar_o_vencer_la_charla_no_borra_los_ids(memoria: Memoria) -> None:
     """R23: los ids viven aparte de la charla."""
     memoria.marcar_procesado(ID_MENSAJE, T0)
-    memoria.anotar_cliente(CONV, "hola", T0)
-    memoria.cerrar_charla(CONV, T0)
+    memoria.confirmar_escrito(CONV, _tomar(memoria), T0)
     memoria.barrer(T0 + TTL_CHARLA)
 
     assert memoria.marcar_procesado(ID_MENSAJE, T0 + TTL_CHARLA) is False
@@ -228,6 +232,47 @@ def test_cada_apertura_tiene_su_epoca(ruta: Path) -> None:
     assert len(epoca) == 32 and epoca != segunda.epoca
 
 
+def test_una_toma_de_otra_epoca_se_libera_pasados_5_minutos_sin_volver_a_pendiente(ruta: Path) -> None:
+    """R25: el proceso murió escribiendo; pasados 5 minutos se libera y el pedido no vuelve."""
+    memoria = Memoria(ruta)
+    _tomar(memoria)
+    memoria.cerrar()
+    memoria = Memoria(ruta)
+
+    memoria.barrer(T0 + HUERFANA)
+    assert memoria.leer_charla(CONV, T0 + HUERFANA).toma is not None
+    despues = T0 + HUERFANA + UN_SEGUNDO
+    memoria.barrer(despues)
+    charla = memoria.leer_charla(CONV, despues)
+    otra = memoria.tomar_para_confirmar(CONV, despues)
+    memoria.cerrar()
+
+    assert charla.toma is None and charla.pedido is None and otra is None
+
+
+def test_una_toma_de_la_misma_epoca_no_es_huerfana(memoria: Memoria) -> None:
+    """R25: la toma en vuelo de este proceso no se libera, aunque pase más de 5 minutos."""
+    toma = _tomar(memoria)
+
+    memoria.barrer(T0 + UNA_HORA)
+
+    assert memoria.leer_charla(CONV, T0 + UNA_HORA).toma == toma
+
+
+def test_una_toma_escrita_de_otra_epoca_no_es_huerfana(ruta: Path) -> None:
+    """R25: solo se libera la que está en escritura; la escrita sigue como recién confirmada."""
+    memoria = Memoria(ruta)
+    memoria.confirmar_escrito(CONV, _tomar(memoria), T0)
+    memoria.cerrar()
+    memoria = Memoria(ruta)
+
+    memoria.barrer(T0 + UNA_HORA)
+    toma = memoria.leer_charla(CONV, T0 + UNA_HORA).toma
+    memoria.cerrar()
+
+    assert toma == Toma(pedido=COMPLETO, generacion=1, escrita=True)
+
+
 # R26 · registro ilegible
 
 
@@ -260,6 +305,33 @@ def test_una_charla_ilegible_se_descarta_sin_loguear_el_valor(
     assert "tabla=charlas error=ValidationError" in caplog.text
     assert "dato-del-cliente" not in caplog.text
     assert _sql(ruta, "SELECT count(*) FROM charlas") == [(0,)]
+
+
+@pytest.mark.parametrize(
+    "datos",
+    [
+        "no es json dato-del-cliente",
+        '{"pedido": {"telefono": "dato-del-cliente"}, "generacion": "dato-del-cliente"}',
+    ],
+)
+def test_una_toma_ilegible_se_descarta_sin_loguear_el_valor(
+    ruta: Path, datos: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """R26: una toma que ya no valida se descarta; el log dice tabla y tipo de error, nunca el valor."""
+    memoria = Memoria(ruta)
+    _tomar(memoria)
+    memoria.cerrar()
+    _sql(ruta, f"UPDATE confirmaciones SET datos = '{datos}';")
+    memoria = Memoria(ruta)
+    caplog.set_level(logging.INFO, logger="app.memoria")
+
+    toma = memoria.leer_charla(CONV, T0).toma
+    memoria.cerrar()
+
+    assert toma is None
+    assert "tabla=confirmaciones error=ValidationError" in caplog.text
+    assert "dato-del-cliente" not in caplog.text
+    assert _sql(ruta, "SELECT count(*) FROM confirmaciones") == [(0,)]
 
 
 # R27 · SQLite en serio
@@ -350,35 +422,124 @@ def test_una_segunda_memoria_sobre_el_mismo_archivo_no_abre(memoria: Memoria, ru
     Memoria(ruta).cerrar()
 
 
-# Reglas de otras secciones que pasan por la memoria
+# §7 · máquina de confirmación (R1 a R5)
 
 
-def test_un_pedido_leido_con_una_generacion_vieja_no_pisa(ruta: Path) -> None:
-    """R5: lo que se leyó antes de una toma no pisa el pedido."""
-    memoria = Memoria(ruta)
+def test_la_toma_saca_el_pedido_de_la_charla_y_lo_deja_en_escritura(memoria: Memoria) -> None:
+    """R4, R5: la toma sube la generación y el pedido pasa de la charla (R22) a EN ESCRITURA."""
+    memoria.anotar_cliente(CONV, "sí", T0)
+    memoria.guardar_pedido(CONV, COMPLETO, 0, T0)
+
+    toma = memoria.tomar_para_confirmar(CONV, T0)
+    charla = memoria.leer_charla(CONV, T0)
+
+    assert toma == Toma(pedido=COMPLETO, generacion=1)
+    assert charla.pedido is None and charla.generacion == 1 and charla.toma == toma
+    assert charla.mensajes == [Mensaje(role="user", content="sí")]
+
+
+def test_sin_pedido_completo_no_hay_toma(memoria: Memoria) -> None:
+    """R1: un pedido a medias no se toma; sigue en la charla y la generación no sube."""
     memoria.guardar_pedido(CONV, PEDIDO, 0, T0)
+
+    assert memoria.tomar_para_confirmar(CONV, T0) is None
+    charla = memoria.leer_charla(CONV, T0)
+    assert charla.pedido == PEDIDO and charla.generacion == 0
+
+
+def test_un_pendiente_vencido_no_se_toma(memoria: Memoria) -> None:
+    """R22: un "sí" de mañana no confirma el resumen de hoy."""
+    memoria.guardar_pedido(CONV, COMPLETO, 0, T0)
+
+    assert memoria.tomar_para_confirmar(CONV, T0 + TTL_CHARLA) is None
+
+
+def test_dos_si_a_la_vez_toman_el_pedido_una_sola_vez(memoria: Memoria) -> None:
+    """R4: dos hilos confirman el mismo pedido a la vez y uno solo se lo lleva."""
+    memoria.guardar_pedido(CONV, COMPLETO, 0, T0)
+
+    with ThreadPoolExecutor(max_workers=8) as hilos:
+        tomas = list(hilos.map(lambda _: memoria.tomar_para_confirmar(CONV, T0), range(32)))
+
+    assert [toma for toma in tomas if toma is not None] == [Toma(pedido=COMPLETO, generacion=1)]
+
+
+def test_con_una_toma_en_escritura_no_se_toma_otra(memoria: Memoria) -> None:
+    """R4: un pedido nacido durante la escritura no se toma hasta que la primera se cierra."""
+    toma = _tomar(memoria)
+    memoria.guardar_pedido(CONV, COMPLETO, toma.generacion, T0)
+
+    assert memoria.tomar_para_confirmar(CONV, T0) is None
+    memoria.confirmar_escrito(CONV, toma, T0)
+    assert memoria.tomar_para_confirmar(CONV, T0) == Toma(pedido=COMPLETO, generacion=2)
+
+
+def test_si_falla_con_otro_pedido_en_curso_queda_el_devuelto(
+    memoria: Memoria, caplog: pytest.LogCaptureFixture
+) -> None:
+    """R2: como en el bot viejo, el devuelto pisa al que nació durante la escritura, con un aviso."""
+    toma = _tomar(memoria)
+    memoria.guardar_pedido(CONV, PEDIDO, toma.generacion, T0)
+    caplog.set_level(logging.WARNING, logger="app.memoria")
+
+    memoria.devolver_a_pendiente(CONV, toma, T0)
+
+    assert memoria.leer_charla(CONV, T0).pedido == COMPLETO
+    assert "otro pedido en curso" in caplog.text
+
+
+def test_una_toma_confirmada_no_vuelve_a_pendiente(memoria: Memoria) -> None:
+    """R3: una fila escrita no se desdice; devolverla después no deja un pedido para otro "sí"."""
+    toma = _tomar(memoria)
+    memoria.confirmar_escrito(CONV, toma, T0)
+
+    memoria.devolver_a_pendiente(CONV, toma, T0)
+    charla = memoria.leer_charla(CONV, T0)
+
+    assert charla.pedido is None and charla.toma == Toma(pedido=COMPLETO, generacion=1, escrita=True)
+
+
+def test_el_recien_confirmado_vence_con_el_ttl_contado_desde_la_confirmacion(
+    memoria: Memoria, ruta: Path
+) -> None:
+    """R6, R7: el confirmado se lee 6 horas desde que quedó escrito; después el barrido lo borra."""
+    toma = _tomar(memoria)
+    escrito = T0 + UNA_HORA
+    memoria.confirmar_escrito(CONV, toma, escrito)
+
+    assert memoria.leer_charla(CONV, escrito + TTL_CHARLA - UN_SEGUNDO).toma is not None
+    assert memoria.leer_charla(CONV, escrito + TTL_CHARLA).toma is None
+    memoria.barrer(escrito + TTL_CHARLA)
     memoria.cerrar()
-    _sql(ruta, f"INSERT INTO generaciones VALUES ({CONV}, 1, {T0.timestamp()});")
-    memoria = Memoria(ruta)
-
-    assert memoria.leer_charla(CONV, T0).generacion == 1
-    assert memoria.guardar_pedido(CONV, Pedido(telefono=TELEFONO, producto="sellos"), 0, T0) is False
-    assert memoria.leer_charla(CONV, T0).pedido == PEDIDO
-    memoria.cerrar()
+    assert _sql(ruta, "SELECT count(*) FROM confirmaciones") == [(0,)]
 
 
-def test_las_generaciones_se_retienen_30_dias(ruta: Path) -> None:
+def test_lo_leido_antes_de_la_toma_no_pisa_ni_reabre(memoria: Memoria) -> None:
+    """R5: un "gracias" que leyó el pedido antes del "sí" no lo deja pendiente otra vez."""
+    memoria.guardar_pedido(CONV, COMPLETO, 0, T0)
+    leida = memoria.leer_charla(CONV, T0)
+    toma = memoria.tomar_para_confirmar(CONV, T0)
+    assert toma is not None
+
+    assert memoria.guardar_pedido(CONV, leida.pedido, leida.generacion, T0) is False
+    assert memoria.leer_charla(CONV, T0).pedido is None
+    memoria.devolver_a_pendiente(CONV, toma, T0)  # tampoco pisa al que volvió a pendiente
+    assert memoria.guardar_pedido(CONV, PEDIDO, leida.generacion, T0) is False
+    assert memoria.leer_charla(CONV, T0).pedido == COMPLETO
+
+
+def test_las_generaciones_se_retienen_30_dias(memoria: Memoria) -> None:
     """R5: un mensaje viejo siempre tiene contra qué comparar."""
-    Memoria(ruta).cerrar()
-    _sql(ruta, f"INSERT INTO generaciones VALUES ({CONV}, 1, {T0.timestamp()});")
-    memoria = Memoria(ruta)
+    _tomar(memoria)
 
     memoria.barrer(T0 + RETENCION_GENERACIONES - UN_SEGUNDO)
     assert memoria.leer_charla(CONV, T0).generacion == 1
 
     memoria.barrer(T0 + RETENCION_GENERACIONES)
     assert memoria.leer_charla(CONV, T0).generacion == 0
-    memoria.cerrar()
+
+
+# Reglas de otras secciones que pasan por la memoria
 
 
 def test_una_hora_sin_zona_se_rechaza(memoria: Memoria) -> None:

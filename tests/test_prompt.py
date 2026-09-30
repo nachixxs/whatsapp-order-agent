@@ -159,7 +159,7 @@ def test_pedido_a_medias_lista_lo_que_falta(config: ConfigNegocio) -> None:
     assert "Datos que el cliente ya dio:\n- producto: sellos\n- cantidad: 3\n" in texto
     assert "Todavía falta: material, medidas, fecha_necesita, tiene_diseno, nombre_cliente." in texto
     assert "confirmar_pedido` con acepta=true" not in texto
-    # archivos (R29): en la 3.3 vuelve el assert de "Ya mandó el archivo del diseño por WhatsApp."
+    # archivos (R29): la línea en el prompt quedó fuera del CP3
 
 
 def test_pedido_completo_pide_confirmar(config: ConfigNegocio) -> None:
@@ -169,7 +169,7 @@ def test_pedido_completo_pide_confirmar(config: ConfigNegocio) -> None:
     assert "Están todos los datos." in texto
     assert 'Un "sí", un "dale", un "listo, gracias" o un 👍 solo son un sí' in texto
     assert 'Un "gracias" pelado, sin nada más, no confirma' in texto
-    # archivos (R29): en la 3.3 vuelve el assert de "Ya mandó 2 archivos del diseño por WhatsApp."
+    # archivos (R29): la línea en el prompt quedó fuera del CP3
 
 
 @pytest.mark.parametrize(
@@ -182,7 +182,7 @@ def test_los_dos_bloques_con_el_pedido_real(config: ConfigNegocio, pedido: Pedid
     _, dinamico = bloques_de_sistema(
         config, config.ahora(), nombre_perfil="Ana Prueba", pedido=pedido, confirmado=pedido
     )
-    for campo, valor in pedido.model_dump(exclude={"telefono"}, exclude_none=True).items():
+    for campo, valor in pedido.model_dump(exclude={"telefono", "archivos"}, exclude_none=True).items():
         assert f"- {campo}: {valor}" in dinamico["text"]
     assert TELEFONO not in dinamico["text"]
 

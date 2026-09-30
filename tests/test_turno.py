@@ -1,8 +1,8 @@
 import itertools
 import logging
 import threading
-from collections.abc import Iterator
-from datetime import date
+from collections.abc import Iterator, Mapping, Sequence
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,14 +18,19 @@ from app.agente import (
     RegistrarPedido,
     SinTool,
 )
-from app.chatwoot import Contacto, MensajeEntrante
+from app.chatwoot import Adjunto, Contacto, MensajeEntrante
 from app.config import ConfigNegocio
 from app.memoria import RETENCION_PROCESADOS, Charla, ErrorMemoria, Memoria
-from app.pedidos import Pedido
+from app.pedidos import ArchivoAdjunto, Pedido
 from app.respuestas import (
+    MENSAJE_ERROR_AL_GUARDAR,
     MENSAJE_ERROR_INTERNO,
     MENSAJE_NO_ENTENDIDO,
+    MENSAJE_PEDIDO_CONFIRMADO,
     MENSAJE_PEDIDO_RECHAZADO,
+    MENSAJE_TIPO_NO_SOPORTADO,
+    acuse_de_archivos,
+    acuse_de_archivos_despues_de_confirmar,
     aviso_de_descartados,
     con_aviso_de_material,
     pregunta_por_dato,
@@ -33,8 +38,9 @@ from app.respuestas import (
     resumen_pedido,
     texto_derivacion,
 )
+from app.sheets import ErrorPlanilla
 from app.tools import MARCADOR_REPREGUNTA_MATERIAL, MATERIAL_A_DEFINIR
-from app.turno import procesar_lote
+from app.turno import NO_SOPORTADO, procesar_lote
 from tests.conftest import HORA_DE_PRUEBA, TELEFONO
 
 CONV = 73915  # un número que no puede aparecer por azar en el alias ni en el teléfono
@@ -60,6 +66,24 @@ class _Agente:
         return self.decisiones.pop(0)
 
 
+class _Planilla:
+    """La planilla falsa: guarda las filas o falla con `error`. Con `esperar`, se queda en escribir_fila
+    hasta que el test la suelta."""
+
+    def __init__(self, error: Exception | None = None, esperar: bool = False) -> None:
+        self.filas: list[dict[str, str]] = []
+        self.error, self.esperar = error, esperar
+        self.entro, self.soltar = threading.Event(), threading.Event()
+
+    def escribir_fila(self, valores: Mapping[str, str]) -> None:
+        self.entro.set()
+        if self.esperar:
+            self.soltar.wait(timeout=5)  # con tope: un test roto no cuelga la suite
+        if self.error is not None:
+            raise self.error
+        self.filas.append(dict(valores))
+
+
 @pytest.fixture
 def memoria(tmp_path: Path) -> Iterator[Memoria]:
     abierta = Memoria(tmp_path / "memoria.db")
@@ -68,12 +92,23 @@ def memoria(tmp_path: Path) -> Iterator[Memoria]:
 
 
 def _mensaje(
-    texto: str = "hola", *, nombre: str | None = NOMBRE, telefono: str | None = TELEFONO
+    texto: str = "hola", *, nombre: str | None = NOMBRE, telefono: str | None = TELEFONO,
+    adjuntos: Sequence[Adjunto] = (), creado: datetime | None = None,
 ) -> MensajeEntrante:
     return MensajeEntrante(
         evento="message_created", id_mensaje=next(_IDS), contenido=texto, id_conversacion=CONV,
-        contacto=Contacto(nombre=nombre, telefono=telefono),
+        contacto=Contacto(nombre=nombre, telefono=telefono), adjuntos=list(adjuntos), creado=creado,
     )
+
+
+def _adjunto(tipo: str = "file", extension: str | None = "pdf") -> Adjunto:
+    ident = next(_IDS)
+    return Adjunto(id=ident, tipo=tipo, extension=extension, tamano=1000 + ident)  # otro tamaño: otro archivo
+
+
+def _archivo(*adjuntos: Adjunto) -> MensajeEntrante:
+    """Un mensaje sin epígrafe con los adjuntos dados, o con un PDF."""
+    return _mensaje("", adjuntos=adjuntos or [_adjunto()])
 
 
 def _registrar(**campos: Any) -> Decision:
@@ -85,9 +120,36 @@ def _confirmar(acepta: bool) -> Decision:
 
 
 def _turno(
-    memoria: Memoria, config: ConfigNegocio, decision: Decision | SinTool | ErrorApi, texto: str = "hola"
+    memoria: Memoria, config: ConfigNegocio, decision: Decision | SinTool | ErrorApi, texto: str = "hola",
+    planilla: _Planilla | None = None,
 ) -> str | None:
-    return procesar_lote(CONV, [_mensaje(texto)], config, memoria, _Agente(decision))
+    return procesar_lote(CONV, [_mensaje(texto)], config, memoria, _Agente(decision), planilla or _Planilla())
+
+
+def _pendiente(memoria: Memoria, config: ConfigNegocio) -> Pedido:
+    """Deja el pedido completo con el resumen mostrado, y lo devuelve."""
+    _turno(memoria, config, _registrar(**COMPLETO))
+    return _pedido(memoria)
+
+
+def _confirmado(memoria: Memoria, config: ConfigNegocio, planilla: _Planilla | None = None) -> Pedido:
+    """Deja el pedido confirmado, con su fila escrita, y lo devuelve."""
+    pedido = _pendiente(memoria, config)
+    assert _turno(memoria, config, _confirmar(True), "sí", planilla) == MENSAJE_PEDIDO_CONFIRMADO
+    return pedido
+
+
+def _lanzar(
+    resultados: dict[str, str | None], clave: str, lote: list[MensajeEntrante], config: ConfigNegocio,
+    memoria: Memoria, agente: _Agente, planilla: _Planilla,
+) -> threading.Thread:
+    """Corre el lote en otro hilo y deja su respuesta en `resultados[clave]`."""
+    def correr() -> None:
+        resultados[clave] = procesar_lote(CONV, lote, config, memoria, agente, planilla)
+
+    hilo = threading.Thread(target=correr)
+    hilo.start()
+    return hilo
 
 
 def _charla(memoria: Memoria) -> Charla:
@@ -176,30 +238,26 @@ def test_rechazar_el_resumen_conserva_los_campos(memoria: Memoria, config: Confi
     assert _historial(memoria)[-1] == "[pedido_rechazado]"
 
 
-def test_aceptar_en_el_cp2_no_dice_listo_ni_deja_marcador(
-    memoria: Memoria, config: ConfigNegocio, caplog: pytest.LogCaptureFixture
-) -> None:
-    """R2: sin planilla no hay fila: no sale ningún texto, no queda turno del bot y el pedido sigue pendiente."""
-    _turno(memoria, config, _registrar(**COMPLETO))
-    antes = _pedido(memoria)
-    caplog.set_level(logging.INFO, logger="app.turno")
-
-    texto = _turno(memoria, config, _confirmar(True), "dale")
-
-    assert texto is None
-    assert _pedido(memoria) == antes
-    assert _historial(memoria)[-2:] == ["[pedido_pendiente_confirmacion]", "dale"]
-    assert "camino=confirmacion_sin_planilla" in caplog.text
-
-
 def test_confirmar_sin_pedido_completo_no_confirma(memoria: Memoria, config: ConfigNegocio) -> None:
-    """R1: confirmar un pedido a medias da sin_pedido_para_confirmar y la repregunta fija."""
+    """R1: confirmar un pedido a medias da sin_pedido_para_confirmar y la repregunta fija, sin fila."""
     _turno(memoria, config, _registrar(producto="sellos"))
+    planilla = _Planilla()
 
-    texto = _turno(memoria, config, _confirmar(True), "sí")
+    texto = _turno(memoria, config, _confirmar(True), "sí", planilla)
 
     assert texto == MENSAJE_NO_ENTENDIDO
+    assert planilla.filas == []
     assert _historial(memoria)[-1] == "[sin_pedido_para_confirmar]"
+
+
+def test_sin_credenciales_de_la_planilla_no_dice_listo(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R2, R53: con la planilla por defecto y sin credenciales, el "sí" recibe el error de guardado, sin red."""
+    pedido = _pendiente(memoria, config)
+
+    texto = procesar_lote(CONV, [_mensaje("sí")], config, memoria, _Agente(_confirmar(True)))
+
+    assert texto == MENSAJE_ERROR_AL_GUARDAR
+    assert _pedido(memoria) == pedido
 
 
 @pytest.mark.parametrize(
@@ -581,3 +639,202 @@ def test_dos_conversaciones_distintas_deciden_a_la_vez(memoria: Memoria, config:
         _soltar(agente, hilos)
 
     assert agente.maximo == 2
+
+
+# R29 a R36 · archivos
+
+
+def test_un_archivo_se_suma_al_pedido_sin_pasar_por_la_api(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R29: el archivo se suma con la hora de pared del negocio, sin zona, y fuerza el diseño en "si"."""
+    adjunto = _adjunto("file", "pdf")
+    mensaje = _mensaje("", adjuntos=[adjunto], creado=datetime(2026, 10, 6, 12, 30, tzinfo=UTC))
+    agente = _Agente()
+
+    procesar_lote(CONV, [mensaje], config, memoria, agente, _Planilla())
+
+    assert agente.llamadas == []  # §3
+    assert _pedido(memoria) == Pedido(
+        telefono=TELEFONO, tiene_diseno="si",
+        archivos=[ArchivoAdjunto(
+            id_adjunto=adjunto.id, id_mensaje=mensaje.id_mensaje, tipo="pdf", tamano=adjunto.tamano,
+            hora=datetime(2026, 10, 6, 9, 30),  # 12:30 UTC en Buenos Aires
+        )],
+    )
+
+
+def test_sin_hora_ni_extension_van_la_hora_del_lote_y_el_file_type(
+    memoria: Memoria, config: ConfigNegocio
+) -> None:
+    """R29: sin created_at, la hora del lote; sin extensión, el file_type de Chatwoot."""
+    procesar_lote(CONV, [_archivo(_adjunto("image", None))], config, memoria, _Agente(), _Planilla())
+
+    archivo = _pedido(memoria).archivos[0]
+    assert (archivo.tipo, archivo.hora) == ("image", datetime(2026, 10, 6, 10, 0))
+
+
+def test_tres_archivos_en_un_lote_reciben_un_solo_acuse(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R30: tres archivos del mismo lote se suman y reciben un acuse que los cuenta."""
+    texto = procesar_lote(CONV, [_archivo(), _archivo(), _archivo()], config, memoria, _Agente(), _Planilla())
+
+    pedido = _pedido(memoria)
+    assert len(pedido.archivos) == 3
+    assert texto == acuse_de_archivos(3, pedido, config)
+    assert _historial(memoria) == ["[archivo_recibido]"]
+
+
+@pytest.mark.parametrize("audio_al_final", [True, False])
+def test_el_error_de_un_archivo_no_lo_tapa_el_acuse_de_otro(
+    memoria: Memoria, config: ConfigNegocio, audio_al_final: bool
+) -> None:
+    """R30, R36: un PDF y un audio en el mismo lote: el PDF se suma, y la respuesta es la del audio."""
+    lote = [_archivo(), _archivo(_adjunto("audio", "ogg"))]
+
+    texto = procesar_lote(CONV, lote if audio_al_final else lote[::-1], config, memoria, _Agente(), _Planilla())
+
+    assert texto == MENSAJE_TIPO_NO_SOPORTADO
+    assert len(_pedido(memoria).archivos) == 1
+
+
+@pytest.mark.parametrize("tipo", ["audio", "location", "video"])
+def test_un_tipo_no_soportado_contesta_y_queda_en_el_historial(
+    memoria: Memoria, config: ConfigNegocio, tipo: str
+) -> None:
+    """R36: un audio, una ubicación o un video reciben la respuesta fija, sin API, y quedan en el historial."""
+    agente = _Agente()
+
+    texto = procesar_lote(CONV, [_archivo(_adjunto(tipo, None))], config, memoria, agente, _Planilla())
+
+    assert texto == MENSAJE_TIPO_NO_SOPORTADO
+    assert agente.llamadas == []
+    assert _historial(memoria) == [NO_SOPORTADO, "[tipo_no_soportado]"]
+    assert _charla(memoria).pedido is None
+
+
+def test_el_archivo_que_completa_el_pedido_muestra_el_resumen(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R31: si con el archivo el pedido queda completo, el acuse sigue con el resumen y deja su marcador."""
+    _turno(memoria, config, _registrar(**COMPLETO | {"tiene_diseno": None}))
+
+    texto = procesar_lote(CONV, [_archivo()], config, memoria, _Agente(), _Planilla())
+
+    pedido = _pedido(memoria)
+    assert pedido.completo
+    assert texto == acuse_de_archivos(1, pedido, config)
+    assert _historial(memoria)[-1] == "[pedido_pendiente_confirmacion]"
+
+
+def test_el_epigrafe_va_al_historial_y_al_modelo(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R34, R31: el epígrafe va al modelo, que ya ve el archivo sumado; el acuse sale con el pedido final."""
+    agente = _Agente(_registrar(**COMPLETO | {"tiene_diseno": None}))
+
+    texto = procesar_lote(CONV, [_mensaje("3 sellos de goma", adjuntos=[_adjunto()])], config, memoria, agente)
+
+    llamada = agente.llamadas[0]
+    assert [m.content for m in llamada["charla"].mensajes] == ["3 sellos de goma"]
+    assert llamada["pedido"].tiene_diseno == "si"
+    pedido = _pedido(memoria)
+    assert pedido.completo and len(pedido.archivos) == 1
+    assert texto == acuse_de_archivos(1, pedido, config)  # el último mensaje del lote trae el archivo
+    assert _historial(memoria) == ["3 sellos de goma", "[pedido_pendiente_confirmacion]"]
+
+
+def test_si_el_ultimo_del_lote_es_un_texto_responde_el_texto(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R30: como el bot viejo, un archivo y después una pregunta: responde la pregunta y el archivo queda."""
+    direccion = Decision("consulta_general", ConsultaGeneral(tema="direccion"))
+
+    texto = procesar_lote(CONV, [_archivo(), _mensaje("¿dónde están?")], config, memoria, _Agente(direccion))
+
+    assert texto == respuesta_faq("direccion", config)
+    assert len(_pedido(memoria).archivos) == 1
+    assert _historial(memoria) == ["¿dónde están?", "[consulta_general: direccion]"]
+
+
+def test_una_derivacion_no_la_tapa_el_acuse_del_archivo(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R15, R30: una foto con "¿la tienen en lona blanca?" deriva por sin_stock; el acuse no tapa la
+    derivación, ni al cliente ni en el historial, y el archivo igual queda en el pedido."""
+    sin_stock = Decision("derivar_a_asesor", DerivarAAsesor(motivo="sin_stock"))
+    mensaje = _mensaje("¿la tienen en lona blanca?", adjuntos=[_adjunto("image", "jpg")])
+
+    texto = procesar_lote(CONV, [mensaje], config, memoria, _Agente(sin_stock), _Planilla())
+
+    assert texto == texto_derivacion("sin_stock", config)
+    assert _historial(memoria) == ["¿la tienen en lona blanca?", "[derivado_a_asesor: sin_stock]"]
+    assert len(_pedido(memoria).archivos) == 1
+
+
+def test_un_archivo_despues_de_confirmar_no_toca_la_fila(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R32: con el pedido recién confirmado, el archivo no toca la fila ni arranca otro pedido; el acuse no
+    dice "guardado"."""
+    planilla = _Planilla()
+    confirmado = _confirmado(memoria, config, planilla)
+
+    texto = procesar_lote(CONV, [_archivo()], config, memoria, _Agente(), planilla)
+
+    assert texto == acuse_de_archivos_despues_de_confirmar(1)
+    charla = _charla(memoria)
+    assert charla.pedido is None
+    assert charla.toma is not None and charla.toma.pedido == confirmado
+    assert len(planilla.filas) == 1
+
+
+def test_un_archivo_con_un_gracias_despues_de_confirmar_igual_se_acusa(
+    memoria: Memoria, config: ConfigNegocio
+) -> None:
+    """R32, R6: el "gracias" que no cambia nada no contesta, pero el archivo del mismo lote se acusa igual."""
+    _confirmado(memoria, config)
+
+    texto = procesar_lote(CONV, [_archivo(), _mensaje("gracias")], config, memoria, _Agente(_registrar()))
+
+    assert texto == acuse_de_archivos_despues_de_confirmar(1)
+
+
+def _archivo_durante_la_escritura(
+    memoria: Memoria, config: ConfigNegocio, planilla: _Planilla
+) -> dict[str, str | None]:
+    """El "sí" entra a escribir la fila y en ese momento llega un archivo, que tiene que esperar."""
+    _pendiente(memoria, config)
+    resultados: dict[str, str | None] = {}
+    si = _lanzar(resultados, "si", [_mensaje("sí")], config, memoria, _Agente(_confirmar(True)), planilla)
+    assert planilla.entro.wait(timeout=5)
+    archivo = _lanzar(resultados, "archivo", [_archivo()], config, memoria, _Agente(), planilla)
+    archivo.join(timeout=0.3)
+    esperaba = archivo.is_alive()
+    planilla.soltar.set()
+    for hilo in (si, archivo):
+        hilo.join(timeout=5)
+    assert esperaba and not si.is_alive() and not archivo.is_alive()
+    return resultados
+
+
+def test_un_archivo_durante_la_escritura_espera_y_no_toca_la_fila(
+    memoria: Memoria, config: ConfigNegocio
+) -> None:
+    """R33: el archivo espera a que la fila se escriba y cae en R32: la fila sale sin él."""
+    planilla = _Planilla(esperar=True)
+
+    resultados = _archivo_durante_la_escritura(memoria, config, planilla)
+
+    assert resultados == {"si": MENSAJE_PEDIDO_CONFIRMADO, "archivo": acuse_de_archivos_despues_de_confirmar(1)}
+    assert [fila["archivos"] for fila in planilla.filas] == [""]
+
+
+def test_un_archivo_durante_una_escritura_que_falla_vuelve_con_el_pedido(
+    memoria: Memoria, config: ConfigNegocio
+) -> None:
+    """R33, R2: si la escritura falla, el archivo se suma al pedido que volvió a pendiente."""
+    planilla = _Planilla(ErrorPlanilla("no se pudo"), esperar=True)
+
+    resultados = _archivo_durante_la_escritura(memoria, config, planilla)
+
+    pedido = _pedido(memoria)
+    assert len(pedido.archivos) == 1 and planilla.filas == []
+    assert resultados == {"si": MENSAJE_ERROR_AL_GUARDAR, "archivo": acuse_de_archivos(1, pedido, config)}
+
+
+def test_el_archivo_61_no_entra_y_se_deriva(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R35: con 60 archivos en el pedido, el 61 no se suma y se deriva."""
+    procesar_lote(CONV, [_archivo() for _ in range(60)], config, memoria, _Agente(), _Planilla())
+
+    texto = procesar_lote(CONV, [_archivo()], config, memoria, _Agente(), _Planilla())
+
+    assert texto == texto_derivacion("fuera_de_alcance", config)
+    assert len(_pedido(memoria).archivos) == 60
