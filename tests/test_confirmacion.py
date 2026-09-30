@@ -19,7 +19,7 @@ from app.respuestas import (
 )
 from app.sheets import ErrorPlanilla
 from app.turno import procesar_lote
-from tests.conftest import TELEFONO
+from tests.conftest import HORA_DE_PRUEBA, TELEFONO
 from tests.test_turno import (
     COMPLETO,
     CONV,
@@ -225,6 +225,23 @@ def test_lo_que_no_cambia_el_confirmado_no_contesta(
     assert _turno(memoria, config, decision, "gracias!") is None
     assert _charla(memoria).pedido is None
     assert _historial(memoria) == ["gracias!"]
+
+
+def test_el_confirmado_reenviado_con_un_campo_descartado_no_abre_otro_pedido(
+    memoria: Memoria, config: ConfigNegocio
+) -> None:
+    """R6, R4: pasada la medianoche, el modelo reenvía el confirmado y su fecha, que ya pasó, se descarta. Por
+    valor no cambió nada: ni texto ni turno del bot, y no arranca otro pedido que terminaría en otra fila."""
+    config.fijar_ahora(HORA_DE_PRUEBA.replace(hour=23))
+    mismo = _registrar(**COMPLETO | {"fecha_necesita": "2026-10-06"})
+    _turno(memoria, config, mismo)
+    assert _turno(memoria, config, _confirmar(True), "sí") == MENSAJE_PEDIDO_CONFIRMADO
+    config.fijar_ahora(HORA_DE_PRUEBA.replace(day=7, hour=0, minute=30))
+
+    assert _turno(memoria, config, mismo, "gracias!") is None
+    charla = memoria.leer_charla(CONV, config.ahora())
+    assert charla.pedido is None
+    assert [mensaje.content for mensaje in charla.mensajes] == ["gracias!"]
 
 
 def test_un_rechazo_sobre_el_confirmado_es_un_cambio(memoria: Memoria, config: ConfigNegocio) -> None:

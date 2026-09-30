@@ -44,8 +44,8 @@ def carrera(
         return Salida("cambio_sobre_pedido_confirmado", MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION)
     if isinstance(argumentos, RegistrarPedido):
         campos = argumentos.model_dump(exclude={"nombre_cliente"})  # el nombre no es un cambio
-        pedido, descartados = sumar_campos(confirmado, campos, config, ahora)  # por valor
-        if descartados or pedido != confirmado:
+        pedido, _ = sumar_campos(confirmado, campos, config, ahora)  # por valor; un descartado no cambia nada
+        if pedido != confirmado:
             return None
     elif not isinstance(argumentos, ConfirmarPedido | PedirDatoFaltante):
         return None
