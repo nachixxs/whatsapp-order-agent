@@ -1,11 +1,13 @@
-"""Webhook de Chatwoot: autentica, filtra y manda cada mensaje de texto al turno (R47 a R50)."""
+"""Webhook de Chatwoot: autentica, filtra, junta las rafagas de archivos (R30) y manda el lote al turno."""
 
 import hashlib
 import hmac
 import logging
 import os
 import sys
+import threading
 from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -35,6 +37,7 @@ VARIABLES_CHATWOOT = (
 )
 TOPE_BYTES_BODY = 1_000_000
 TOLERANCIA_SEGUNDOS = 300
+ESPERA_LOTE_SEGUNDOS = 8.0  # R30: silencio que cierra la ventana de una rafaga de archivos
 # Raiz del repo: `*.db` esta en .gitignore, asi que la base nunca se versiona; y no depende del cwd.
 MEMORIA_RUTA_POR_DEFECTO = Path(__file__).resolve().parent.parent / "memoria.db"
 
@@ -113,25 +116,69 @@ def _cuenta_valida(mensaje: MensajeEntrante) -> bool:
         return False
 
 
+@dataclass
+class _Ventana:
+    lote: list[MensajeEntrante] = field(default_factory=list)
+    timer: threading.Timer | None = None
+
+
+_ventanas: dict[int, _Ventana] = {}
+_candado = threading.Lock()
+
+
+def _acumular(mensaje: MensajeEntrante, cliente: ClienteChatwoot, config: ConfigNegocio, memoria: Memoria) -> bool:
+    """R30: un adjunto abre la ventana de su conversacion; todo mensaje que llega con la ventana abierta se
+    suma y reinicia la espera. False si no hay ventana ni adjunto: el mensaje sale directo."""
+    conversacion = mensaje.id_conversacion
+    if conversacion is None:
+        return False
+    with _candado:
+        ventana = _ventanas.get(conversacion)
+        if ventana is None:
+            if not mensaje.adjuntos:
+                return False
+            ventana = _ventanas[conversacion] = _Ventana()
+        ventana.lote.append(mensaje)
+        if ventana.timer is not None:
+            ventana.timer.cancel()
+        # Timer y no una tarea del event loop: sobrevive al request y `procesar_lote` bloquea
+        ventana.timer = threading.Timer(ESPERA_LOTE_SEGUNDOS, _cerrar_ventana, (conversacion, cliente, config, memoria))
+        ventana.timer.daemon = True
+        ventana.timer.start()
+    return True
+
+
+def _cerrar_ventana(conversacion: int, cliente: ClienteChatwoot, config: ConfigNegocio, memoria: Memoria) -> None:
+    with _candado:
+        ventana = _ventanas.pop(conversacion, None)
+    if ventana is not None:
+        _procesar_turno(conversacion, ventana.lote, cliente, config, memoria)
+
+
 def _procesar_turno(
-    mensaje: MensajeEntrante, cliente: ClienteChatwoot, config: ConfigNegocio, memoria: Memoria
+    id_conversacion: int | None,
+    lote: list[MensajeEntrante],
+    cliente: ClienteChatwoot,
+    config: ConfigNegocio,
+    memoria: Memoria,
 ) -> None:
-    """Corre en el threadpool (BackgroundTasks ejecuta las `def` con run_in_threadpool): SQLite y la
-    API bloquean, y el event loop tiene que seguir libre para el webhook (R50)."""
-    if mensaje.id_conversacion is None:
+    """Corre en el threadpool (BackgroundTasks) o en el hilo del timer: SQLite y la API bloquean, y el
+    event loop tiene que seguir libre para el webhook (R50)."""
+    if id_conversacion is None:
         logger.warning("Webhook Chatwoot: sin id de conversacion, no se responde")
         return
-    if not mensaje.contenido.strip():
-        # Tarea 3.3: los adjuntos todavia no van al turno. Hasta la 3.5 (debounce, R30) un mensaje es un lote.
+    # Hasta la 3.4b procesar_lote solo sabe de texto
+    con_texto = [m for m in lote if m.contenido.strip()]
+    if not con_texto:
         return
-    texto = procesar_lote(mensaje.id_conversacion, [mensaje], config, memoria)
+    texto = procesar_lote(id_conversacion, con_texto, config, memoria)
     if texto is None:
         return
     try:
-        cliente.responder(mensaje.id_conversacion, texto)
+        cliente.responder(id_conversacion, texto)
     except (httpx.HTTPError, OSError) as error:
         # R52: solo el tipo del error, nunca su mensaje (puede traer la URL con el id de conversacion)
-        logger.error("Webhook Chatwoot: fallo al responder alias=%s error=%s", alias_conversacion(mensaje.id_conversacion), type(error).__name__)
+        logger.error("Webhook Chatwoot: fallo al responder alias=%s error=%s", alias_conversacion(id_conversacion), type(error).__name__)
 
 
 def _capturar_payload(cuerpo: bytes) -> None:
@@ -191,9 +238,10 @@ async def webhook_chatwoot(
         logger.warning("Webhook Chatwoot: account o inbox inesperado")
         return {"estado": "ignorado"}
     alias = alias_conversacion(mensaje.id_conversacion)
-    logger.info("Webhook Chatwoot: mensaje aceptado alias=%s evento=%s", alias, para_log(mensaje.evento))
+    logger.info("Webhook Chatwoot: mensaje aceptado alias=%s evento=%s adjuntos=%d", alias, para_log(mensaje.evento), len(mensaje.adjuntos))
     _capturar_payload(cuerpo)
-    background_tasks.add_task(_procesar_turno, mensaje, cliente, config, memoria)
+    if not _acumular(mensaje, cliente, config, memoria):
+        background_tasks.add_task(_procesar_turno, mensaje.id_conversacion, [mensaje], cliente, config, memoria)
     return {"estado": "ok"}
 
 
