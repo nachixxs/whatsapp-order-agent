@@ -13,6 +13,7 @@ from app.respuestas import (
     MENSAJE_ERROR_AL_GUARDAR,
     MENSAJE_ERROR_INTERNO,
     MENSAJE_PEDIDO_CONFIRMADO,
+    acuse_de_archivos,
     pregunta_por_dato,
     respuesta_faq,
 )
@@ -113,6 +114,28 @@ def test_cualquier_otra_falla_al_escribir_tambien_devuelve_el_pedido(
     assert texto == MENSAJE_ERROR_INTERNO
     charla = _charla(memoria)
     assert charla.pedido == pedido and charla.toma is None
+
+
+def test_una_toma_que_quedo_en_escritura_no_cuenta_como_confirmada(
+    memoria: Memoria, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R2, R7, R32: si falla la planilla y también devolver el pedido, la toma queda en escritura sin fila:
+    el prompt no la recibe como confirmada y un archivo no recibe "Tu pedido ya estaba confirmado"."""
+    _pendiente(memoria, config)
+
+    def fallar(*_: object) -> None:
+        raise ErrorMemoria("confirmaciones: OperationalError")
+
+    monkeypatch.setattr(memoria, "devolver_a_pendiente", fallar)
+    planilla = _Planilla(ErrorPlanilla("no se pudo"))
+    assert _turno(memoria, config, _confirmar(True), "sí", planilla) == MENSAJE_ERROR_INTERNO
+    agente = _Agente(HORARIOS)
+
+    procesar_lote(CONV, [_mensaje("¿a qué hora abren?")], config, memoria, agente, _Planilla())
+    texto = procesar_lote(CONV, [_archivo()], config, memoria, _Agente(), _Planilla())
+
+    assert agente.llamadas[0]["confirmado"] is None
+    assert texto == acuse_de_archivos(1, _pedido(memoria), config)
 
 
 def test_lo_que_falla_despues_de_escribir_no_desdice_la_fila(

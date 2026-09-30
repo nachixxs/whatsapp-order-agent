@@ -29,8 +29,9 @@ class Salida:
 
 
 def pedido_confirmado(charla: Charla) -> Pedido | None:
-    """R6, R7: el pedido tomado para confirmar, si no hay otro en curso (como el bot viejo)."""
-    return charla.toma.pedido if charla.toma is not None and charla.pedido is None else None
+    """R6, R7: el pedido ya escrito (R2), si no hay otro en curso (como el bot viejo)."""
+    toma = charla.toma
+    return toma.pedido if toma is not None and toma.escrita and charla.pedido is None else None
 
 
 def carrera(
