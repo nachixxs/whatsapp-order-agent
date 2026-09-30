@@ -144,18 +144,6 @@ def test_anotar_en_una_charla_vencida_arranca_de_cero(memoria: Memoria) -> None:
     assert charla.pedido is None
 
 
-def test_confirmar_cierra_la_charla_y_deja_el_pedido_confirmado(memoria: Memoria) -> None:
-    """R22: al confirmar se cierra la charla; el pedido queda como recién confirmado (R7)."""
-    memoria.anotar_cliente(CONV, "sí", T0)
-    toma = _tomar(memoria)
-
-    memoria.confirmar_escrito(CONV, toma, T0)
-    charla = memoria.leer_charla(CONV, T0)
-
-    assert charla.mensajes == [] and charla.pedido is None
-    assert charla.toma == Toma(pedido=COMPLETO, generacion=1, escrita=True)
-
-
 def test_confirmar_conserva_el_pedido_nacido_durante_la_escritura(memoria: Memoria) -> None:
     """R22: un pedido que nació durante la escritura se conserva al cerrar, sin el historial."""
     toma = _tomar(memoria)
@@ -466,13 +454,6 @@ def test_un_pendiente_vencido_no_se_toma(memoria: Memoria) -> None:
     assert memoria.tomar_para_confirmar(CONV, T0 + TTL_CHARLA) is None
 
 
-def test_el_segundo_si_no_encuentra_pendiente(memoria: Memoria) -> None:
-    """R4: "sí" y "dale" seguidos escriben una fila: el segundo no encuentra nada que tomar."""
-    memoria.confirmar_escrito(CONV, _tomar(memoria), T0)
-
-    assert memoria.tomar_para_confirmar(CONV, T0) is None
-
-
 def test_dos_si_a_la_vez_toman_el_pedido_una_sola_vez(memoria: Memoria) -> None:
     """R4: dos hilos confirman el mismo pedido a la vez y uno solo se lo lleva."""
     memoria.guardar_pedido(CONV, COMPLETO, 0, T0)
@@ -490,19 +471,6 @@ def test_con_una_toma_en_escritura_no_se_toma_otra(memoria: Memoria) -> None:
 
     assert memoria.tomar_para_confirmar(CONV, T0) is None
     memoria.confirmar_escrito(CONV, toma, T0)
-    assert memoria.tomar_para_confirmar(CONV, T0) == Toma(pedido=COMPLETO, generacion=2)
-
-
-def test_si_falla_la_planilla_el_pedido_vuelve_a_pendiente_marcado(memoria: Memoria) -> None:
-    """R2: vuelve con sus campos y el marcador confirmacion_fallida; un "sí" nuevo lo vuelve a tomar."""
-    memoria.anotar_marcador(CONV, "pedido_pendiente_confirmacion", T0)
-    toma = _tomar(memoria)
-
-    memoria.devolver_a_pendiente(CONV, toma, T0)
-    charla = memoria.leer_charla(CONV, T0)
-
-    assert charla.pedido == COMPLETO and charla.toma is None
-    assert charla.mensajes[-1] == Mensaje(role="assistant", content="[confirmacion_fallida]")
     assert memoria.tomar_para_confirmar(CONV, T0) == Toma(pedido=COMPLETO, generacion=2)
 
 

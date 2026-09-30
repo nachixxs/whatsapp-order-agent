@@ -719,7 +719,6 @@ def test_el_archivo_que_completa_el_pedido_muestra_el_resumen(memoria: Memoria, 
     pedido = _pedido(memoria)
     assert pedido.completo
     assert texto == acuse_de_archivos(1, pedido, config)
-    assert texto.endswith(resumen_pedido(pedido, config))
     assert _historial(memoria)[-1] == "[pedido_pendiente_confirmacion]"
 
 

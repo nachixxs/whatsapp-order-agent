@@ -65,12 +65,7 @@ def procesar_lote(
     decidir: Decidir = agente.decidir,
     planilla: Planilla = _planilla,
 ) -> str | None:
-    """El texto para el cliente, o None si no se le manda nada. Nunca lanza.
-
-    Quien llama (main.py) pasa los mensajes de esta conversación ya filtrados (R47 a R49), con texto o con
-    adjuntos; lo corre fuera del event loop (SQLite, la API y la planilla bloquean) y, si vuelve un texto,
-    lo manda con `ClienteChatwoot.responder(conversacion, texto)`. Un lote, una respuesta (R30).
-    """
+    """El texto para el cliente, o None si no se le manda nada. Nunca lanza. Un lote, una respuesta (R30)."""
     alias = alias_conversacion(conversacion)
     nuevos: list[int] = []
     lote: list[MensajeEntrante] = []

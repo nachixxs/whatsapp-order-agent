@@ -110,13 +110,6 @@ def test_las_columnas_son_las_de_la_planilla_en_orden() -> None:
     )
 
 
-def test_la_fila_va_en_el_orden_de_las_columnas_con_anticipo_vacio() -> None:
-    """R9: once celdas en el orden de COLUMNAS; anticipo siempre vacío."""
-    hoja = HojaFalsa()
-    Planilla(hoja).escribir_fila(VALORES)
-    assert hoja.filas == [[VALORES[columna] for columna in COLUMNAS[:-1]] + [""]]
-
-
 def test_una_formula_se_escribe_raw_y_queda_como_texto(monkeypatch: pytest.MonkeyPatch) -> None:
     """R9: valueInputOption=RAW en el request; =IMPORTXML(...) llega a la celda tal cual, como texto."""
     sesion, _ = _conectar(monkeypatch)

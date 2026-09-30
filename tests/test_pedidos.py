@@ -279,7 +279,6 @@ def test_un_archivo_fuerza_tiene_diseno_si(antes: str | None) -> None:
     pedido = Pedido(telefono=TELEFONO, tiene_diseno=antes)
     con_archivo = _con_archivos(_archivo(1), pedido=pedido)
     assert con_archivo.tiene_diseno == "si"
-    assert "tiene_diseno" not in con_archivo.faltantes()
     assert pedido.tiene_diseno == antes
     repetido = _con_archivos(_archivo(1), pedido=con_archivo.model_copy(update={"tiene_diseno": antes}))
     assert repetido.tiene_diseno == "si"

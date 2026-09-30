@@ -1,6 +1,4 @@
 import logging
-from collections.abc import Iterator
-from pathlib import Path
 
 import pytest
 
@@ -39,6 +37,7 @@ from tests.test_turno import (
     _Planilla,
     _registrar,
     _turno,
+    memoria,  # el fixture: pytest lo pide por nombre
 )
 
 # R9: las columnas de §5 menos anticipo; fecha_ingreso con el reloj del negocio (HORA_DE_PRUEBA)
@@ -47,13 +46,6 @@ FILA = {
     "producto": "sellos", "material": "goma", "medidas": "4x2 cm", "cantidad": "3", "tiene_diseno": "si",
     "archivos": "", "fecha_necesita": "2026-10-09",
 }
-
-
-@pytest.fixture
-def memoria(tmp_path: Path) -> Iterator[Memoria]:
-    abierta = Memoria(tmp_path / "memoria.db")
-    yield abierta
-    abierta.cerrar()
 
 
 # R1 a R3 · la escritura
