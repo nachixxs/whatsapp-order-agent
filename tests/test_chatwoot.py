@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -15,7 +16,7 @@ def test_parsear_evento_mensaje_incoming_completo() -> None:
     assert mensaje.id_conversacion == 555
     assert mensaje.account_id == 1
     assert mensaje.inbox_id == 2
-    assert mensaje.cantidad_adjuntos == 0
+    assert mensaje.adjuntos == []
 
 
 def test_parsear_evento_surrogate_en_el_contenido() -> None:
@@ -32,7 +33,7 @@ def test_parsear_evento_tipos_inesperados_en_campos() -> None:
     mensaje = parsear_evento(json.dumps(payload).encode("utf-8"))
     assert mensaje is not None
     assert mensaje.id_conversacion is None
-    assert mensaje.cantidad_adjuntos == 0
+    assert mensaje.adjuntos == []
 
 
 def test_responder_sin_credenciales_no_lanza(caplog: pytest.LogCaptureFixture) -> None:
@@ -78,3 +79,34 @@ def test_responder_fallo_de_red_no_lanza_ni_loguea_el_token(
     with caplog.at_level("ERROR"):
         cliente.responder(555, "Eco: hola")  # no debe lanzar
     assert "secreto-de-prueba" not in caplog.text
+
+
+def test_adjuntos_se_parsean_sin_data_url() -> None:
+    """R29 y R52: el adjunto lleva id, tipo, extension y tamano; el data_url no entra al modelo."""
+    url = "https://chatwoot.local/rails/active_storage/blobs/redirect/secreto-firmado"
+    adjunto = {"id": 7, "file_type": "image", "extension": None, "file_size": 2048, "data_url": url}
+    mensaje = parsear_evento(json.dumps(_payload(content=None, attachments=[adjunto])).encode())
+    assert mensaje is not None
+    assert [a.model_dump() for a in mensaje.adjuntos] == [
+        {"id": 7, "tipo": "image", "extension": None, "tamano": 2048}
+    ]
+    assert "secreto-firmado" not in repr(mensaje)
+
+
+def test_adjunto_sin_id_valido_se_descarta() -> None:
+    """R51: un adjunto sin id (o con basura) se descarta sin tumbar el parseo del resto."""
+    crudos = [{"file_type": "image"}, {"id": "x"}, "basura", {"id": 3, "file_type": "file"}]
+    mensaje = parsear_evento(json.dumps(_payload(attachments=crudos)).encode())
+    assert mensaje is not None
+    assert [a.id for a in mensaje.adjuntos] == [3]
+
+
+def test_creado_en_utc_y_none_si_falta_o_es_invalido() -> None:
+    """R29: created_at sale en UTC; si falta o es invalido queda None (se usa la hora de llegada)."""
+    ok = parsear_evento(json.dumps(_payload(created_at="2026-09-27T21:05:27.700Z")).encode())
+    assert ok is not None
+    assert ok.creado == datetime(2026, 9, 27, 21, 5, 27, 700000, tzinfo=UTC)
+    for valor in (None, "ayer", 12, ""):
+        mensaje = parsear_evento(json.dumps(_payload(created_at=valor)).encode())
+        assert mensaje is not None
+        assert mensaje.creado is None
