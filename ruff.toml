@@ -1,0 +1,7 @@
+# Solo `ruff check`, nunca `ruff format`: reflotar el código cambia el conteo de líneas del presupuesto.
+# Sin CI todavía: correrlo y decidir si bloquea, en el CP5.
+line-length = 120
+target-version = "py314"
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "T20", "DTZ", "BLE"]
