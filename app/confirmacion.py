@@ -56,10 +56,13 @@ def pedido_confirmado(charla: Charla) -> Pedido | None:
 
 
 def carrera(
-    decision: Decision | SinTool, confirmado: Pedido, config: ConfigNegocio, ahora: datetime
+    decision: Decision | SinTool, charla: Charla, config: ConfigNegocio, ahora: datetime
 ) -> Salida | None:
-    """R6. None es el camino normal: con el confirmado en el prompt (R7), un cambio llega como
-    derivar_a_asesor y un registrar_pedido con otros datos es un pedido nuevo."""
+    """R6, hasta 5 minutos después de la fila. None es el camino normal: con el confirmado en el prompt (R7),
+    un cambio llega como derivar_a_asesor y un registrar_pedido con otros datos es un pedido nuevo."""
+    confirmado = pedido_confirmado(charla)
+    if confirmado is None or charla.toma is None or not charla.toma.en_carrera:
+        return None
     argumentos = decision.argumentos if isinstance(decision, Decision) else None
     if isinstance(argumentos, ConfirmarPedido) and not argumentos.acepta:  # un rechazo cambia, como en el viejo
         cambio = "cambio_sobre_pedido_confirmado"
@@ -81,7 +84,7 @@ def confirmar(conversacion: int, memoria: Memoria, planilla: Planilla, ahora: da
         return Salida("sin_pedido_para_confirmar", MENSAJE_NO_ENTENDIDO)
     try:
         planilla.escribir_fila(_fila(toma.pedido, ahora))
-    except Exception as error:  # R2: una toma sin cerrar trabaría la conversación 6 horas
+    except Exception as error:  # R2: sin devolverlo, el pedido quedaría fuera de la charla
         memoria.devolver_a_pendiente(conversacion, toma, ahora)  # deja el marcador de la falla
         if not isinstance(error, ErrorPlanilla):
             raise

@@ -17,7 +17,8 @@ from app.pedidos import Pedido
 logger = logging.getLogger(__name__)
 
 TOPE_MENSAJES = 20
-TTL_CHARLA = timedelta(hours=6)  # R22; también el del pedido recién confirmado (R6, R7)
+TTL_CHARLA = timedelta(hours=6)  # R22; también el del pedido recién confirmado (R7)
+CARRERA = timedelta(minutes=5)  # R6: después de escribir la fila
 RETENCION_PROCESADOS = timedelta(days=8)  # R23
 RETENCION_GENERACIONES = timedelta(days=30)  # R5
 HUERFANA = timedelta(minutes=5)  # R25
@@ -54,6 +55,7 @@ class Toma(BaseModel):
     pedido: Pedido
     generacion: int  # R5: la que subió esta toma; la identifica al confirmarla o devolverla
     escrita: bool = False  # no va en `datos`: sale de su columna
+    en_carrera: bool = False  # R6: escrita hace menos de CARRERA; tampoco va en `datos`
 
 
 class Charla(BaseModel):
@@ -110,7 +112,8 @@ def _leer_toma(con: sqlite3.Connection, conversacion: int, ahora_s: float) -> To
     if fila is None or ahora_s - fila[0] >= TTL_CHARLA.total_seconds():
         return None
     toma = _validar(con, "confirmaciones", Toma, conversacion, fila[1])
-    return None if toma is None else toma.model_copy(update={"escrita": bool(fila[2])})
+    carrera = bool(fila[2]) and ahora_s - fila[0] < CARRERA.total_seconds()  # `actualizada`: la de la fila
+    return None if toma is None else toma.model_copy(update={"escrita": bool(fila[2]), "en_carrera": carrera})
 
 
 def _leer(con: sqlite3.Connection, conversacion: int, ahora_s: float) -> Charla:
@@ -211,18 +214,20 @@ class Memoria:
 
     def tomar_para_confirmar(self, conversacion: int, ahora: datetime) -> Toma | None:
         """R4: en un paso, el pedido completo sale de la charla (R22) y queda EN ESCRITURA.
-        None si no hay pendiente o si ya hay otra toma en escritura."""
+        None si no hay pendiente o si hay otra en escritura de otra época (R25). Una de esta época se
+        reemplaza: con el candado del turno (R28), la que se encuentra en escritura es una que murió."""
         ahora_s = _segundos(ahora)
         with self._transaccion("confirmaciones") as con:
             charla = _leer(con, conversacion, ahora_s)
-            en_escritura = charla.toma is not None and not charla.toma.escrita
+            de_otra = "SELECT 1 FROM confirmaciones WHERE conversacion = ? AND escrita = 0 AND epoca != ?"
+            en_escritura = charla.toma and con.execute(de_otra, (conversacion, self.epoca)).fetchone()
             if charla.pedido is None or not charla.pedido.completo or en_escritura:  # R1
                 return None
             toma = Toma(pedido=charla.pedido, generacion=charla.generacion + 1)
             # R5: lo que se leyó antes de este paso ya no pisa ni reabre
             sql = "REPLACE INTO generaciones VALUES (?, ?, ?)"
             con.execute(sql, (conversacion, toma.generacion, ahora_s))
-            datos = toma.model_dump_json(exclude={"escrita"})
+            datos = toma.model_dump_json(exclude={"escrita", "en_carrera"})
             sql = "REPLACE INTO confirmaciones VALUES (?, ?, ?, ?, 0)"
             con.execute(sql, (conversacion, ahora_s, datos, self.epoca))  # R25
             _escribir(con, conversacion, charla.model_copy(update={"pedido": None}), ahora_s)

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from app.memoria import (
+    CARRERA,
     HUERFANA,
     RETENCION_GENERACIONES,
     RETENCION_PROCESADOS,
@@ -481,14 +482,40 @@ def test_dos_si_a_la_vez_toman_el_pedido_una_sola_vez(memoria: Memoria) -> None:
     assert [toma for toma in tomas if toma is not None] == [Toma(pedido=COMPLETO, generacion=1)]
 
 
-def test_con_una_toma_en_escritura_no_se_toma_otra(memoria: Memoria) -> None:
-    """R4: un pedido nacido durante la escritura no se toma hasta que la primera se cierra."""
+def test_una_toma_nueva_reemplaza_a_la_trabada_de_esta_epoca(memoria: Memoria) -> None:
+    """R25, R28: si falló cerrar la toma, la que quedó en escritura de esta época ya murió (el candado del turno
+    no deja entrar a otro mensaje mientras escribe): el pedido siguiente la reemplaza en vez de esperar 6 horas."""
     toma = _tomar(memoria)
     memoria.guardar_pedido(CONV, COMPLETO, toma.generacion, T0)
 
+    nueva = memoria.tomar_para_confirmar(CONV, T0)
+
+    assert nueva == Toma(pedido=COMPLETO, generacion=2)
+    assert memoria.leer_charla(CONV, T0).toma == nueva
+
+
+def test_la_toma_trabada_no_deja_tomar_dos_veces_el_mismo_pedido(memoria: Memoria) -> None:
+    """R4: "sí" y "dale" seguidos: aunque el "sí" haya quedado trabado, el "dale" no encuentra pendiente."""
+    toma = _tomar(memoria)
+
     assert memoria.tomar_para_confirmar(CONV, T0) is None
-    memoria.confirmar_escrito(CONV, toma, T0)
-    assert memoria.tomar_para_confirmar(CONV, T0) == Toma(pedido=COMPLETO, generacion=2)
+    charla = memoria.leer_charla(CONV, T0)
+    assert charla.toma == toma and charla.generacion == 1
+
+
+def test_una_toma_en_escritura_de_otra_epoca_no_se_reemplaza(ruta: Path) -> None:
+    """R25: la de otra época la libera el barrido pasados 5 minutos; antes, un pedido nuevo no la reemplaza."""
+    memoria = Memoria(ruta)
+    toma = _tomar(memoria)
+    memoria.guardar_pedido(CONV, COMPLETO, toma.generacion, T0)
+    memoria.cerrar()
+    memoria = Memoria(ruta)
+
+    otra = memoria.tomar_para_confirmar(CONV, T0)
+    charla = memoria.leer_charla(CONV, T0)
+    memoria.cerrar()
+
+    assert otra is None and charla.toma == toma and charla.pedido == COMPLETO
 
 
 def test_si_falla_con_otro_pedido_en_curso_queda_el_devuelto(
@@ -513,7 +540,8 @@ def test_una_toma_confirmada_no_vuelve_a_pendiente(memoria: Memoria) -> None:
     memoria.devolver_a_pendiente(CONV, toma, T0)
     charla = memoria.leer_charla(CONV, T0)
 
-    assert charla.pedido is None and charla.toma == Toma(pedido=COMPLETO, generacion=1, escrita=True)
+    assert charla.pedido is None
+    assert charla.toma == Toma(pedido=COMPLETO, generacion=1, escrita=True, en_carrera=True)
 
 
 def test_el_recien_confirmado_vence_con_el_ttl_contado_desde_la_confirmacion(
@@ -529,6 +557,21 @@ def test_el_recien_confirmado_vence_con_el_ttl_contado_desde_la_confirmacion(
     memoria.barrer(escrito + TTL_CHARLA)
     memoria.cerrar()
     assert _sql(ruta, "SELECT count(*) FROM confirmaciones") == [(0,)]
+
+
+def test_la_carrera_dura_5_minutos_desde_la_fila(memoria: Memoria) -> None:
+    """R6, R7: la toma escrita está en carrera hasta 5 minutos después de la fila, no de la toma; después sigue
+    como recién confirmada, sin carrera."""
+    toma = _tomar(memoria)
+    assert memoria.leer_charla(CONV, T0).toma == toma and not toma.en_carrera  # en escritura: el candado (R28)
+    escrito = T0 + UNA_HORA
+    memoria.confirmar_escrito(CONV, toma, escrito)
+
+    antes = memoria.leer_charla(CONV, escrito + CARRERA - UN_SEGUNDO).toma
+    despues = memoria.leer_charla(CONV, escrito + CARRERA).toma
+
+    assert antes == Toma(pedido=COMPLETO, generacion=1, escrita=True, en_carrera=True)
+    assert despues == Toma(pedido=COMPLETO, generacion=1, escrita=True)
 
 
 def test_lo_leido_antes_de_la_toma_no_pisa_ni_reabre(memoria: Memoria) -> None:

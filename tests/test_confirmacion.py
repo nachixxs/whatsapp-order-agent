@@ -1,10 +1,11 @@
 import logging
+from datetime import timedelta
 
 import pytest
 
 from app.agente import Decision, PedirDatoFaltante
 from app.config import ConfigNegocio
-from app.memoria import ErrorMemoria, Memoria
+from app.memoria import CARRERA, ErrorMemoria, Memoria
 from app.pedidos import Pedido
 from app.respuestas import (
     MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION,
@@ -51,6 +52,11 @@ FILA = {
     "archivos": "", "fecha_necesita": "2026-10-09",
 }
 CAMBIO = "cambio_sobre_pedido_confirmado"  # R6: el motivo de la derivación
+REPREGUNTA = Decision("pedir_dato_faltante", PedirDatoFaltante(dato="producto"))
+
+
+def _fallar(*_: object) -> None:
+    raise ErrorMemoria("confirmaciones: OperationalError")
 
 
 # R1 a R3 · la escritura
@@ -227,18 +233,70 @@ def test_lo_que_no_cambia_el_confirmado_no_contesta(
 def test_el_confirmado_reenviado_con_un_campo_descartado_no_abre_otro_pedido(
     memoria: Memoria, config: ConfigNegocio
 ) -> None:
-    """R6, R4: pasada la medianoche, el modelo reenvía el confirmado y su fecha, que ya pasó, se descarta. Por
-    valor no cambió nada: ni texto ni turno del bot, y no arranca otro pedido que terminaría en otra fila."""
-    config.fijar_ahora(HORA_DE_PRUEBA.replace(hour=23))
+    """R6, R4: pasada la medianoche y dentro de los 5 minutos, el modelo reenvía el confirmado y su fecha, que
+    ya pasó, se descarta. Por valor no cambió nada: ni texto ni turno del bot, y no arranca otro pedido."""
+    config.fijar_ahora(HORA_DE_PRUEBA.replace(hour=23, minute=58))
     mismo = _registrar(**COMPLETO | {"fecha_necesita": "2026-10-06"})
     _turno(memoria, config, mismo)
     assert _turno(memoria, config, _confirmar(True), "sí") == MENSAJE_PEDIDO_CONFIRMADO
-    config.fijar_ahora(HORA_DE_PRUEBA.replace(day=7, hour=0, minute=30))
+    config.fijar_ahora(HORA_DE_PRUEBA.replace(day=7, hour=0, minute=1))
 
     assert _turno(memoria, config, mismo, "gracias!") is None
     charla = memoria.leer_charla(CONV, config.ahora())
     assert charla.pedido is None
     assert [mensaje.content for mensaje in charla.mensajes] == ["gracias!"]
+
+
+def test_la_carrera_dura_5_minutos_despues_de_la_fila(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R6, R7: una repregunta a los 4:59 de escrita la fila no contesta; a los 5:00 es un mensaje normal y se
+    contesta, con el confirmado todavía en el prompt."""
+    confirmado = _confirmado(memoria, config)  # la fila se escribe en HORA_DE_PRUEBA
+    agente = _Agente(REPREGUNTA, REPREGUNTA)
+
+    config.fijar_ahora(HORA_DE_PRUEBA + CARRERA - timedelta(seconds=1))
+    antes = _lote(CONV, [_mensaje("quiero otro pedido")], config, memoria, agente, _Planilla())
+    config.fijar_ahora(HORA_DE_PRUEBA + CARRERA)
+    despues = _lote(CONV, [_mensaje("quiero otro pedido")], config, memoria, agente, _Planilla())
+
+    assert antes is None
+    assert despues == pregunta_por_dato("producto", config)
+    assert [llamada["confirmado"] for llamada in agente.llamadas] == [confirmado, confirmado]
+
+
+def test_una_toma_trabada_no_traba_el_pedido_siguiente(
+    memoria: Memoria, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R25, R3: si cerrar la toma falla con la fila escrita, la toma queda en escritura; el pedido siguiente la
+    reemplaza y su "sí" escribe su propia fila, sin esperar las 6 horas."""
+    planilla = _Planilla()
+    _pendiente(memoria, config)
+    with monkeypatch.context() as parche:
+        parche.setattr(memoria, "confirmar_escrito", _fallar)
+        assert _turno(memoria, config, _confirmar(True), "sí", planilla) == MENSAJE_PEDIDO_CONFIRMADO
+    toma = _charla(memoria).toma
+    assert toma is not None and not toma.escrita
+
+    _confirmado(memoria, config, planilla)
+
+    assert planilla.filas == [FILA, FILA]
+    toma = _charla(memoria).toma
+    assert toma is not None and toma.escrita and toma.generacion == 2
+
+
+def test_si_y_dale_seguidos_con_la_toma_trabada_escriben_una_sola_fila(
+    memoria: Memoria, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R4: el "sí" escribe la fila pero no cierra la toma; el "dale" que entra después no la reemplaza: no
+    encuentra pendiente y no deja otra fila."""
+    _pendiente(memoria, config)
+    monkeypatch.setattr(memoria, "confirmar_escrito", _fallar)
+    planilla = _Planilla()
+
+    assert _turno(memoria, config, _confirmar(True), "sí", planilla) == MENSAJE_PEDIDO_CONFIRMADO
+    _turno(memoria, config, _confirmar(True), "dale", planilla)
+
+    assert planilla.filas == [FILA]
+    assert _charla(memoria).pedido is None
 
 
 def test_un_rechazo_sobre_el_confirmado_es_un_cambio(memoria: Memoria, config: ConfigNegocio) -> None:
