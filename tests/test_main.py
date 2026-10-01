@@ -29,9 +29,23 @@ class ClienteFalso(ClienteChatwoot):
     def __init__(self) -> None:
         super().__init__()
         self.respuestas: list[tuple[int, str]] = []
+        self.llamadas: list[str] = []  # orden de los pasos: "responder", "nota_interna", "pasar_a_persona"
+        self.notas: list[str] = []
+        self.fallan: set[str] = set()  # pasos que devuelven False, como el cliente real cuando Chatwoot falla
 
-    def responder(self, id_conversacion: int, texto: str) -> None:
+    def responder(self, id_conversacion: int, texto: str) -> bool:
+        self.llamadas.append("responder")
         self.respuestas.append((id_conversacion, texto))
+        return "responder" not in self.fallan
+
+    def nota_interna(self, id_conversacion: int, texto: str) -> bool:
+        self.llamadas.append("nota_interna")
+        self.notas.append(texto)
+        return "nota_interna" not in self.fallan
+
+    def pasar_a_persona(self, id_conversacion: int) -> bool:
+        self.llamadas.append("pasar_a_persona")
+        return "pasar_a_persona" not in self.fallan
 
 
 def _configurar_entorno(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,10 +70,12 @@ class TurnoFalso:
     def __init__(self) -> None:
         self.llamados: list[tuple[int, list[object], object, object]] = []
         self.texto: str | None = "respuesta del turno"
+        self.nota: str | None = None
+        self.derivar = False
 
     def __call__(self, conversacion: int, mensajes: object, config: object, memoria: object) -> Resultado:
         self.llamados.append((conversacion, list(mensajes), config, memoria))  # type: ignore[call-overload]
-        return Resultado(self.texto)
+        return Resultado(self.texto, self.nota, self.derivar)
 
 
 @pytest.fixture
@@ -379,31 +395,88 @@ def test_r52_data_url_no_aparece_en_el_log(
     assert "555" not in texto
 
 
-def test_webhook_falla_al_responder_se_loguea_sin_valores_y_da_200(
+def _turno(
     client: TestClient,
     config: ConfigNegocio,
     monkeypatch: pytest.MonkeyPatch,
     turno_falso: TurnoFalso,
+    texto: str | None,
+    nota: str | None,
+    derivar: bool,
+) -> None:
+    _configurar_entorno(monkeypatch)
+    turno_falso.texto, turno_falso.nota, turno_falso.derivar = texto, nota, derivar
+    assert _post(client, config, json.dumps(_payload()).encode()).status_code == 200
+
+
+def test_r47_derivar_responde_deja_la_nota_y_pasa_a_open_en_ese_orden(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+) -> None:
+    """R47: respuesta, nota interna y open, en ese orden."""
+    _turno(client, config, monkeypatch, turno_falso, "texto", "nota", True)
+    assert cliente_falso.llamadas == ["responder", "nota_interna", "pasar_a_persona"]
+    assert cliente_falso.notas == ["nota"]
+
+
+def test_r32_nota_sin_derivar_no_pasa_a_open(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+) -> None:
+    """R32: la nota del archivo despues de confirmar se deja, pero la conversacion sigue con el bot."""
+    _turno(client, config, monkeypatch, turno_falso, "texto", "archivo", False)
+    assert cliente_falso.llamadas == ["responder", "nota_interna"]
+
+
+def test_r47_derivar_sin_nota_pasa_a_open_igual(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+) -> None:
+    """R47: sin nota la conversacion pasa a open igual."""
+    _turno(client, config, monkeypatch, turno_falso, "texto", None, True)
+    assert cliente_falso.llamadas == ["responder", "pasar_a_persona"]
+
+
+def test_r47_falla_la_respuesta_la_nota_y_open_salen_igual(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+) -> None:
+    """R47: la persona tiene que ver la nota y la conversacion pasar a open aunque la respuesta no haya salido."""
+    cliente_falso.fallan = {"responder"}
+    _turno(client, config, monkeypatch, turno_falso, "texto", "nota", True)
+    assert cliente_falso.llamadas == ["responder", "nota_interna", "pasar_a_persona"]
+
+
+def test_r47_falla_la_nota_open_sale_igual(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+) -> None:
+    """R47: una nota que no salio no deja al cliente sin persona."""
+    cliente_falso.fallan = {"nota_interna"}
+    _turno(client, config, monkeypatch, turno_falso, "texto", "nota", True)
+    assert cliente_falso.llamadas == ["responder", "nota_interna", "pasar_a_persona"]
+
+
+def test_r47_texto_none_con_nota_la_nota_sale_igual(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+) -> None:
+    """R32: un archivo que no se acusa igual deja su nota; sin texto no se le escribe al cliente."""
+    _turno(client, config, monkeypatch, turno_falso, None, "archivo", False)
+    assert cliente_falso.llamadas == ["nota_interna"]
+
+
+def test_r52_fallos_se_loguean_con_paso_y_alias_sin_datos_y_el_webhook_da_200(
+    client: TestClient,
+    config: ConfigNegocio,
+    monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso,
+    turno_falso: TurnoFalso,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """R52 y R50: un error de responder no tumba el webhook y el log lleva el tipo, no el mensaje."""
-
-    class ClienteRoto(ClienteChatwoot):
-        def responder(self, id_conversacion: int, texto: str) -> None:
-            raise httpx.ConnectError("http://chatwoot.local/conversations/555 token-secreto")
-
-    app.dependency_overrides[get_cliente_chatwoot] = lambda: ClienteRoto()
-    _configurar_entorno(monkeypatch)
-    try:
-        with caplog.at_level(logging.INFO):
-            respuesta = _post(client, config, json.dumps(_payload()).encode())
-    finally:
-        app.dependency_overrides.pop(get_cliente_chatwoot, None)
-    assert respuesta.status_code == 200
-    texto = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("app."))
-    assert "ConnectError" in texto
-    assert "token-secreto" not in texto
-    assert "555" not in texto
+    """R52 y R50: cada paso fallido deja un error con su nombre y el alias; nada del cliente ni el id real."""
+    cliente_falso.fallan = {"responder", "nota_interna", "pasar_a_persona"}
+    with caplog.at_level(logging.INFO):
+        _turno(client, config, monkeypatch, turno_falso, "texto del cliente", "nota privada", True)
+    errores = [r.getMessage() for r in caplog.records if r.name.startswith("app.") and r.levelno == logging.ERROR]
+    assert [e.split("paso ")[1].split(" ")[0] for e in errores] == ["responder", "nota_interna", "pasar_a_persona"]
+    assert all("alias=" in e and "555" not in e for e in errores)
+    assert "texto del cliente" not in " ".join(errores)
+    assert "nota privada" not in " ".join(errores)
 
 
 @pytest.mark.parametrize(
