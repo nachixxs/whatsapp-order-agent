@@ -739,6 +739,29 @@ def test_un_tipo_no_soportado_contesta_y_queda_en_el_historial(
     assert _charla(memoria).pedido is None
 
 
+def test_un_sticker_no_cuenta_como_archivo_del_diseno(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R36, R29: Chatwoot guarda el sticker de WhatsApp como imagen webp; como en el bot viejo, recibe la
+    respuesta fija, queda en el historial y no se suma al pedido ni fuerza el diseño."""
+    _turno(memoria, config, _registrar(producto="sellos"))
+
+    texto = _lote(CONV, [_archivo(_adjunto("image", "webp"))], config, memoria, _Agente(), _Planilla())
+
+    assert texto == MENSAJE_TIPO_NO_SOPORTADO
+    assert _pedido(memoria) == Pedido(telefono=TELEFONO, producto="sellos")
+    assert _historial(memoria)[-2:] == [NO_SOPORTADO, "[tipo_no_soportado]"]
+
+
+def test_una_foto_jpg_cuenta_como_archivo_del_diseno(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R29: una imagen jpg se suma al pedido y fuerza el diseño en "si"."""
+    adjunto = _adjunto("image", "jpg")
+
+    texto = _lote(CONV, [_archivo(adjunto)], config, memoria, _Agente(), _Planilla())
+
+    pedido = _pedido(memoria)
+    assert [(archivo.id_adjunto, archivo.tipo) for archivo in pedido.archivos] == [(adjunto.id, "jpg")]
+    assert pedido.tiene_diseno == "si" and texto == acuse_de_archivos(1, pedido, config)
+
+
 def test_el_archivo_que_completa_el_pedido_muestra_el_resumen(memoria: Memoria, config: ConfigNegocio) -> None:
     """R31: si con el archivo el pedido queda completo, el acuse sigue con el resumen y deja su marcador."""
     _turno(memoria, config, _registrar(**COMPLETO | {"tiene_diseno": None}))

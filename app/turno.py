@@ -52,7 +52,6 @@ _SIN_TOOL_CON_ESTADO = frozenset({"argumentos_invalidos", "tool_desconocida"})
 _RESUMEN = "pedido_pendiente_confirmacion"
 _ERRORES = frozenset({"error_interno", CONFIRMACION_FALLIDA})  # R41: con estos, ni se registra ni se pregunta
 TOPE_MENSAJE = 4096  # R35: el de WhatsApp; el historial entero vuelve a la API en cada llamada
-TIPOS_DE_DISENO = frozenset({"image", "file"})  # R29: la imagen y el documento del bot viejo; el resto, R36
 NO_SOPORTADO = "[adjunto no soportado]"  # R36: lo que queda en el historial del lado del cliente
 _planilla = Planilla()  # R53: abre la hoja recién en la primera escritura
 # R28: con un solo proceso alcanza un candado en memoria. No se limpia: es un int y un Lock por
@@ -93,7 +92,7 @@ def procesar_lote(
                     lote.append(mensaje)
                     if mensaje.contenido.strip():  # R34: también el epígrafe de un archivo
                         memoria.anotar_cliente(conversacion, mensaje.contenido[:TOPE_MENSAJE], ahora)
-                    if any(adjunto.tipo not in TIPOS_DE_DISENO for adjunto in mensaje.adjuntos):  # R36
+                    if not all(map(_de_diseno, mensaje.adjuntos)):  # R36
                         memoria.anotar_cliente(conversacion, NO_SOPORTADO, ahora)
             if not lote:
                 logger.info("turno: sin mensajes nuevos alias=%s", alias)
@@ -149,7 +148,7 @@ def _sumar_archivos(
     None deja el acuse para cuando el texto del lote ya se aplicó (R31)."""
     adjuntos = [(mensaje, adjunto) for mensaje in lote for adjunto in mensaje.adjuntos]
     archivos = [_archivo(mensaje, adjunto, config, ahora) for mensaje, adjunto in adjuntos
-                if adjunto.tipo in TIPOS_DE_DISENO]
+                if _de_diseno(adjunto)]
     no_soportado = Salida("tipo_no_soportado", MENSAJE_TIPO_NO_SOPORTADO, error=True)  # R36: nunca silencio
     error = no_soportado if len(archivos) < len(adjuntos) else None
     if not archivos:
@@ -169,6 +168,10 @@ def _sumar_archivos(
         pedido = sumado
     memoria.guardar_pedido(conversacion, pedido, charla.generacion, ahora)  # R28: nadie lo tomó en el medio
     return error
+
+
+def _de_diseno(adjunto: Adjunto) -> bool:  # R29: la imagen y el documento, como el bot viejo
+    return adjunto.tipo == "file" or adjunto.tipo == "image" and adjunto.extension != "webp"  # R36: sticker
 
 
 def _archivo(
@@ -192,7 +195,7 @@ def _elegir(
     for salida in (archivos, texto):
         if salida is not None and salida.error:
             return salida
-    recibidos = sum(adjunto.tipo in TIPOS_DE_DISENO for mensaje in lote for adjunto in mensaje.adjuntos)
+    recibidos = sum(_de_diseno(adjunto) for mensaje in lote for adjunto in mensaje.adjuntos)
     if texto is not None and (not recibidos or texto.texto is not None and not lote[-1].adjuntos):
         return texto
     if archivos is not None:  # R32
@@ -215,7 +218,7 @@ def _turno(
     )
     if isinstance(decision, ErrorApi):  # R12: el texto no dice qué se rompió
         return decision, Salida("error_interno", MENSAJE_ERROR_INTERNO, error=True)
-    salida = None if confirmado is None else carrera(decision, confirmado, config, ahora)
+    salida = carrera(decision, charla, config, ahora)
     registrado = registro and registro.nombre_cliente
     salida = salida or _aplicar(decision, charla, contacto.telefono, registrado, config, ahora)
     if salida is ESCRIBIR:
