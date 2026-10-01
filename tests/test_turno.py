@@ -2,7 +2,7 @@ import itertools
 import logging
 import threading
 from collections.abc import Iterator, Mapping, Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -968,6 +968,39 @@ def test_despues_de_derivar_un_si_no_confirma(memoria: Memoria, config: ConfigNe
     assert planilla.filas == []
 
 
+def test_lo_creado_antes_de_la_derivacion_no_se_contesta(
+    memoria: Memoria, config: ConfigNegocio, caplog: pytest.LogCaptureFixture
+) -> None:
+    """R47, R52: el segundo mensaje llegó en pending mientras el primero estaba en la API y corre después del
+    pase: se marca procesado, pero no se anota, no se contesta, no acusa su archivo ni deriva otra vez."""
+    caplog.set_level(logging.INFO, logger="app.turno")
+    _turno(memoria, config, SIN_STOCK, "¿hay en lona?")
+    agente = _Agente(HORARIOS)
+    antes = _mensaje("¿y en vinilo?", adjuntos=[_adjunto()], creado=HORA_DE_PRUEBA - timedelta(seconds=1))
+    justo = _mensaje("¿hola?", creado=HORA_DE_PRUEBA)  # anterior o igual
+
+    resultado = procesar_lote(CONV, [antes, justo], config, memoria, agente, _Planilla())
+
+    assert resultado == Resultado(None)
+    assert agente.llamadas == [] and _charla(memoria).pedido is None
+    assert _historial(memoria) == ["¿hay en lona?", "[derivado_a_asesor: sin_stock]"]
+    assert procesar_lote(CONV, [antes], config, memoria, agente) == Resultado(None)  # R23: quedó marcado
+    assert "turno: anterior a la derivación alias=" in caplog.text and "vinilo" not in caplog.text
+
+
+@pytest.mark.parametrize("creado", [HORA_DE_PRUEBA + timedelta(seconds=1), None])
+def test_lo_creado_despues_de_la_derivacion_se_procesa(
+    memoria: Memoria, config: ConfigNegocio, creado: datetime | None
+) -> None:
+    """R47: la persona devolvió la conversación a pending; lo que el cliente escribe después, o sin hora, se
+    contesta normal."""
+    _turno(memoria, config, SIN_STOCK, "¿hay en lona?")
+
+    texto = _lote(CONV, [_mensaje("¿a qué hora abren?", creado=creado)], config, memoria, _Agente(HORARIOS))
+
+    assert texto == respuesta_faq("horarios", config)
+
+
 def test_un_error_no_deja_nota_ni_pase(memoria: Memoria, config: ConfigNegocio) -> None:
     """R24, R47: un turno que falla contesta el error interno, sin nota ni pase."""
     agente = _Agente(_registrar(producto="sellos"))
@@ -1118,3 +1151,37 @@ def test_el_nombre_registrado_no_es_un_cambio_sobre_el_confirmado(
     assert contactos.escritos == []
 
 
+def test_un_contacto_nuevo_que_deriva_no_recibe_la_pregunta(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R41, R47: la pregunta del nombre no va debajo de una derivación (decidido 2026-09-30); sin nombre no hay
+    alta, y la pregunta sale en el próximo turno que no deriva."""
+    contactos, agente = _Contactos(), _Agente(SIN_STOCK, HORARIOS)
+
+    derivado = _con_registro(memoria, config, agente, contactos, "¿hay en lona?")
+    assert (derivado, contactos.escritos) == (_derivado("sin_stock", config), [])
+
+    texto = _con_registro(memoria, config, agente, contactos, "¿a qué hora abren?")
+    assert texto == con_pregunta_del_nombre(respuesta_faq("horarios", config))
+    assert contactos.escritos == [_alta(True)]
+
+
+def test_un_contacto_nuevo_con_un_audio_no_recibe_la_pregunta(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R41, R36: tampoco va debajo del tipo no soportado; sin nombre, no hay alta."""
+    contactos = _Contactos()
+    audio = _mensaje("", adjuntos=[_adjunto("audio", "ogg")], atributos={})
+
+    texto = _lote(CONV, [audio], config, memoria, _Agente(), _Planilla(), contactos)
+
+    assert (texto, contactos.escritos) == (MENSAJE_TIPO_NO_SOPORTADO, [])
+
+
+def test_un_contacto_nuevo_que_dijo_su_nombre_queda_registrado_aunque_no_se_pregunte(
+    memoria: Memoria, config: ConfigNegocio
+) -> None:
+    """R45, R36: un audio y "soy Bruno Díaz": la respuesta es la del audio, y el alta sale con el nombre dicho."""
+    contactos = _Contactos()
+    lote = [_mensaje("", adjuntos=[_adjunto("audio", "ogg")], atributos={}), _mensaje("soy Bruno Díaz", atributos={})]
+
+    texto = _lote(CONV, lote, config, memoria, _Agente(_registrar(nombre_cliente="Bruno Díaz")), _Planilla(), contactos)
+
+    assert texto == MENSAJE_TIPO_NO_SOPORTADO
+    assert contactos.escritos == [_alta(False, nombre_cliente="Bruno Díaz")]

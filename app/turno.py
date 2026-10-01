@@ -1,7 +1,6 @@
 """Un lote de mensajes de una conversación, con texto o adjuntos, de punta a punta (SPECS §3, §6, §7 y §11)."""
 
 import logging
-import threading
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -19,8 +18,8 @@ from app.agente import (
 )
 from app.chatwoot import Adjunto, ClienteChatwoot, Contacto, MensajeEntrante
 from app.confirmacion import (
-    CONFIRMADO, ESCRIBIR, Salida, a_un_asesor, carrera, confirmar, derivada, pedido_confirmado,
-    respuesta_al_resumen,
+    CONFIRMADO, ESCRIBIR, Salida, a_un_asesor, candado, carrera, confirmar, derivada, pedido_confirmado,
+    respuesta_al_resumen, soltar_completo,
 )
 from app.config import ConfigNegocio
 from app.contactos import Registro, leer_registro, nombre_del_perfil, plan_primer_contacto, pregunta_viva
@@ -50,14 +49,11 @@ Decidir = Callable[..., Decision | SinTool | ErrorApi]
 # Los motivos de SinTool con estado propio en el bot viejo; el resto es `sin_tool`
 _SIN_TOOL_CON_ESTADO = frozenset({"argumentos_invalidos", "tool_desconocida"})
 _RESUMEN = "pedido_pendiente_confirmacion"
+_NO_SOPORTADO = "tipo_no_soportado"
 _ERRORES = frozenset({"error_interno", CONFIRMACION_FALLIDA})  # R41: con estos, ni se registra ni se pregunta
 TOPE_MENSAJE = 4096  # R35: el de WhatsApp; el historial entero vuelve a la API en cada llamada
 NO_SOPORTADO = "[adjunto no soportado]"  # R36: lo que queda en el historial del lado del cliente
 _planilla = Planilla()  # R53: abre la hoja recién en la primera escritura
-# R28: con un solo proceso alcanza un candado en memoria. No se limpia: es un int y un Lock por
-# conversación, y borrar uno que otro hilo está esperando dejaría entrar a dos turnos a la vez
-_candados: dict[int, threading.Lock] = {}
-_guarda = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -81,13 +77,17 @@ def procesar_lote(
     nuevos: list[int] = []
     lote: list[MensajeEntrante] = []
     decision: Decision | SinTool | ErrorApi | None = None
-    with _candado(conversacion):  # R28, R5. R4, R33: lo que llega durante la escritura espera acá
+    with candado(conversacion):  # R28, R5. R4, R33: lo que llega durante la escritura espera acá
         try:
             ahora = config.ahora()  # R37: un solo reloj para todo el lote
             memoria.barrer(ahora)
+            pase = memoria.leer_charla(conversacion, ahora).derivada  # R47
             for mensaje in mensajes:
                 # R23. Sin id no hay compuerta, y sin compuerta no se procesa (R24)
                 if mensaje.id_mensaje is not None and memoria.marcar_procesado(mensaje.id_mensaje, ahora):
+                    if pase and mensaje.creado and mensaje.creado <= pase:  # R47: ya es de una persona
+                        logger.info("turno: anterior a la derivación alias=%s", alias)
+                        continue
                     nuevos.append(mensaje.id_mensaje)
                     lote.append(mensaje)
                     if mensaje.contenido.strip():  # R34: también el epígrafe de un archivo
@@ -102,16 +102,12 @@ def procesar_lote(
             archivos = _sumar_archivos(conversacion, lote, contacto.telefono, config, memoria, ahora)
             texto = None
             if any(mensaje.contenido.strip() or not mensaje.adjuntos for mensaje in lote):  # §3
-                decision, texto = _turno(
-                    conversacion, contacto, registro, config, memoria, decidir, planilla, ahora
-                )
+                decision, texto = _turno(conversacion, contacto, registro, config, memoria, decidir, planilla, ahora)
                 if isinstance(decision, ErrorApi) and _reintentable(decision):
                     _desmarcar(memoria, nuevos)
             salida = _elegir(texto, archivos, lote, conversacion, config, memoria, ahora)
-            if salida.motivo is not None:  # R47: un "sí" no confirma el resumen que ya vio una persona
-                charla = memoria.leer_charla(conversacion, ahora)
-                if charla.pedido is not None and charla.pedido.completo:
-                    memoria.guardar_pedido(conversacion, None, charla.generacion, ahora)
+            if salida.motivo is not None:  # R47
+                charla = soltar_completo(conversacion, memoria, ahora)
                 salida = derivada(salida, charla, registro and registro.nombre_cliente, config, ahora)
             if archivos is not None and archivos.nota and salida is not archivos:  # R32: no se pierde
                 salida = replace(salida, nota="\n\n".join(filter(None, (salida.nota, archivos.nota))))
@@ -124,12 +120,16 @@ def procesar_lote(
                 respuesta_vacia=salida.texto is None, nombre_dicho=None if confirmo else nombre,
                 nombre_perfil=nombre_del_perfil(contacto), nombre_confirmado=nombre if confirmo else None,
                 repregunta_del_nombre=salida.camino == "dato_faltante: nombre_cliente",
+                sin_pregunta=salida.motivo is not None or salida.camino == _NO_SOPORTADO,  # decidido 2026-09-30
             )
             if plan.escribir and contacto.id is not None and actualizar_contacto(contacto.id, plan.escribir):
                 with suppress(ErrorMemoria):  # R3: con la fila escrita, la memoria ya no cambia la respuesta
                     memoria.anotar_atributos(conversacion, plan.escribir, ahora)
                 if plan.preguntar:  # R41: solo con el alta escrita
                     salida = replace(salida, texto=con_pregunta_del_nombre(salida.texto))
+            if salida.motivo is not None:  # R47: con la hora del pase, lo más tarde posible dentro del candado
+                with suppress(ErrorMemoria):  # la memoria ya dejó su log; el pase sale igual
+                    memoria.anotar_derivacion(conversacion, config.ahora())
         except Exception as error:  # R23, R24: el proceso falló; se desmarca y el cliente recibe el error
             # Sin marcador: no se sabe en qué quedó la memoria. R52: el tipo, nunca el mensaje del error
             logger.error("turno: fallo alias=%s error=%s", alias, type(error).__name__)
@@ -149,7 +149,7 @@ def _sumar_archivos(
     adjuntos = [(mensaje, adjunto) for mensaje in lote for adjunto in mensaje.adjuntos]
     archivos = [_archivo(mensaje, adjunto, config, ahora) for mensaje, adjunto in adjuntos
                 if _de_diseno(adjunto)]
-    no_soportado = Salida("tipo_no_soportado", MENSAJE_TIPO_NO_SOPORTADO, error=True)  # R36: nunca silencio
+    no_soportado = Salida(_NO_SOPORTADO, MENSAJE_TIPO_NO_SOPORTADO, error=True)  # R36: nunca silencio
     error = no_soportado if len(archivos) < len(adjuntos) else None
     if not archivos:
         return error
@@ -218,8 +218,8 @@ def _turno(
     )
     if isinstance(decision, ErrorApi):  # R12: el texto no dice qué se rompió
         return decision, Salida("error_interno", MENSAJE_ERROR_INTERNO, error=True)
-    salida = carrera(decision, charla, config, ahora)
     registrado = registro and registro.nombre_cliente
+    salida = carrera(decision, charla, registrado, config, ahora)
     salida = salida or _aplicar(decision, charla, contacto.telefono, registrado, config, ahora)
     if salida is ESCRIBIR:
         salida = confirmar(conversacion, memoria, planilla, ahora)
@@ -249,11 +249,9 @@ def _aplicar(
             base = sumar_campos(base, {"nombre_cliente": registrado}, config, ahora)[0]
         return _registrar(argumentos, base, config, ahora)
     if isinstance(argumentos, PedirDatoFaltante):
-        dato = argumentos.dato
-        return Salida(f"dato_faltante: {dato}", pregunta_por_dato(dato, config))
+        return Salida(f"dato_faltante: {argumentos.dato}", pregunta_por_dato(argumentos.dato, config))
     if isinstance(argumentos, ConsultaGeneral):
-        tema = argumentos.tema
-        return Salida(f"consulta_general: {tema}", respuesta_faq(tema, config))
+        return Salida(f"consulta_general: {argumentos.tema}", respuesta_faq(argumentos.tema, config))
     if isinstance(argumentos, DerivarAAsesor):
         return a_un_asesor(argumentos.motivo, config)
     return respuesta_al_resumen(argumentos, charla.pedido)
@@ -292,8 +290,3 @@ def _desmarcar(memoria: Memoria, ids: list[int]) -> None:
     with suppress(ErrorMemoria):  # la memoria ya dejó en su log la tabla y el tipo de error
         for id_mensaje in ids:
             memoria.desmarcar_procesado(id_mensaje)
-
-
-def _candado(conversacion: int) -> threading.Lock:
-    with _guarda:  # sin la guarda, dos hilos podrían crear cada uno su Lock para la misma conversación
-        return _candados.setdefault(conversacion, threading.Lock())

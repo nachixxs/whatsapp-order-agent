@@ -64,6 +64,7 @@ class Charla(BaseModel):
     mensajes: list[Mensaje] = []
     pedido: Pedido | None = None  # R26: uno que ya no valida descarta la charla al leerla
     atributos: dict[str, str | bool] = {}  # R45: lo que esta charla escribió en el contacto de Chatwoot
+    derivada: datetime | None = None  # R47: lo creado hasta acá ya es de una persona
     generacion: int = 0  # R5: no se guarda con la charla, sale de `generaciones`
     toma: Toma | None = None  # R6, R7: tampoco; sale de `confirmaciones` y vence aparte
 
@@ -118,13 +119,9 @@ def _leer_toma(con: sqlite3.Connection, conversacion: int, ahora_s: float) -> To
 
 def _leer(con: sqlite3.Connection, conversacion: int, ahora_s: float) -> Charla:
     clave = (conversacion,)
-    fila = con.execute(
-        "SELECT generacion FROM generaciones WHERE conversacion = ?", clave
-    ).fetchone()
+    fila = con.execute("SELECT generacion FROM generaciones WHERE conversacion = ?", clave).fetchone()
     vacia = Charla(generacion=fila[0] if fila else 0, toma=_leer_toma(con, conversacion, ahora_s))
-    fila = con.execute(
-        "SELECT actualizada, datos FROM charlas WHERE conversacion = ?", clave
-    ).fetchone()
+    fila = con.execute("SELECT actualizada, datos FROM charlas WHERE conversacion = ?", clave).fetchone()
     if fila is None or ahora_s - fila[0] >= TTL_CHARLA.total_seconds():  # R22
         return vacia
     charla = _validar(con, "charlas", Charla, conversacion, fila[1])
@@ -200,6 +197,12 @@ class Memoria:
             escritos = charla.atributos | atributos
             _escribir(con, conversacion, charla.model_copy(update={"atributos": escritos}), ahora_s)
 
+    def anotar_derivacion(self, conversacion: int, ahora: datetime) -> None:
+        ahora_s = _segundos(ahora)  # R37: con zona, para compararla con el created_at de Chatwoot
+        with self._transaccion("charlas") as con:
+            charla = _leer(con, conversacion, ahora_s)
+            _escribir(con, conversacion, charla.model_copy(update={"derivada": ahora}), ahora_s)
+
     def guardar_pedido(
         self, conversacion: int, pedido: Pedido | None, generacion: int, ahora: datetime
     ) -> bool:
@@ -243,8 +246,8 @@ class Memoria:
                 con.execute(sql, (ahora_s, conversacion))
             if charla.pedido is not None:  # R22: nació durante la escritura; se conserva, sin el historial
                 logger.warning("Memoria: nació un pedido durante la escritura; se conserva")
-            # R22: la charla se cierra. R45: lo escrito en el contacto sigue ganándole a un payload viejo
-            _escribir(con, conversacion, Charla(pedido=charla.pedido, atributos=charla.atributos), ahora_s)
+            # R22: se cierra sin el historial. Quedan lo escrito en el contacto (R45) y la hora del pase (R47)
+            _escribir(con, conversacion, charla.model_copy(update={"mensajes": []}), ahora_s)
 
     def devolver_a_pendiente(self, conversacion: int, toma: Toma, ahora: datetime) -> None:
         """R2: falló la planilla; el pedido vuelve a la charla con el marcador de la falla."""

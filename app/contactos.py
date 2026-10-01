@@ -79,15 +79,18 @@ def _mismo(nombre: str | None, otro: str | None) -> bool:
 
 def plan_primer_contacto(
     registro: Registro | None, ahora: datetime, *, error: bool, respuesta_vacia: bool, nombre_dicho: str | None,
-    nombre_perfil: str | None, repregunta_del_nombre: bool, nombre_confirmado: str | None,
+    nombre_perfil: str | None, repregunta_del_nombre: bool, nombre_confirmado: str | None, sin_pregunta: bool,
 ) -> Plan:
-    """R41 a R45. Los nombres llegan limpios (nombre_limpio, R44); el del perfil no es uno dicho (R43)."""
+    """R41 a R45. Los nombres llegan limpios (nombre_limpio, R44); el del perfil no es uno dicho (R43).
+    `sin_pregunta`: una derivación o un tipo no soportado, que no llevan la pregunta debajo (2026-09-30)."""
     if registro is None or error or respuesta_vacia:  # R41, R44
         return Plan(None, False)
     dicho = None if _mismo(nombre_dicho, nombre_perfil) else nombre_dicho
     if registro.primer_contacto is None:  # R42: la repregunta del nombre ya es la pregunta
         if dicho or nombre_confirmado:  # R45: el que dijo, o el del pedido que confirmó en este lote
             return Plan(atributos_del_alta(ahora, preguntado=False, nombre=dicho or nombre_confirmado), False)
+        if sin_pregunta:  # sin alta: un alta sin nombre ni pregunta no la haría nunca; sigue nuevo
+            return Plan(None, False)
         return Plan(atributos_del_alta(ahora, preguntado=True), not repregunta_del_nombre)
     nombre = dicho if pregunta_viva(registro, ahora) else None  # R42
     # R45: el del pedido confirmado; R43: el del perfil no pisa uno registrado

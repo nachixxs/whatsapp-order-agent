@@ -25,7 +25,7 @@ PREGUNTADO = Registro(AHORA - timedelta(hours=1), True, None)  # la pregunta del
 def _plan(registro: Registro | None, **cambios: object) -> Plan:
     entradas: dict[str, object] = {
         "error": False, "respuesta_vacia": False, "nombre_dicho": None, "nombre_perfil": PERFIL,
-        "repregunta_del_nombre": False, "nombre_confirmado": None,
+        "repregunta_del_nombre": False, "nombre_confirmado": None, "sin_pregunta": False,
     }
     return plan_primer_contacto(registro, AHORA, **(entradas | cambios))  # type: ignore[arg-type]
 
@@ -117,7 +117,6 @@ def test_el_alta_sin_nombre_no_toca_nombre_cliente() -> None:
     assert atributos_del_alta(AHORA, preguntado=False) == {
         "primer_contacto": "2026-10-06T10:00:00-03:00", "nombre_preguntado": False,
     }
-    assert atributos_del_nombre("Ana Prueba") == {"nombre_cliente": "Ana Prueba"}
 
 
 @pytest.mark.parametrize(
@@ -182,6 +181,26 @@ def test_nuevo_que_confirma_se_registra_con_el_nombre_del_pedido() -> None:
     """R45: el contacto nuevo que confirma en este lote queda con el nombre del pedido, sin la pregunta."""
     assert _plan(NUEVO, nombre_confirmado=PERFIL) == Plan(
         atributos_del_alta(AHORA, preguntado=False, nombre=PERFIL), False
+    )
+
+
+def test_nuevo_bajo_una_derivacion_no_se_registra_ni_se_pregunta() -> None:
+    """R41, R42: bajo una derivación o un tipo no soportado no va la pregunta (decidido 2026-09-30), y sin
+    nombre tampoco va el alta: con nombre_preguntado en falso y sin nombre, no se preguntaría nunca."""
+    assert _plan(NUEVO, sin_pregunta=True) == NADA
+
+
+def test_nuevo_bajo_una_derivacion_con_su_nombre_se_registra() -> None:
+    """R43, R45: si dijo su nombre, o confirmó un pedido con nombre, el alta sale igual, sin la pregunta."""
+    con_nombre = Plan(atributos_del_alta(AHORA, preguntado=False, nombre="Ana Prueba"), False)
+    assert _plan(NUEVO, sin_pregunta=True, nombre_dicho="Ana Prueba") == con_nombre
+    assert _plan(NUEVO, sin_pregunta=True, nombre_confirmado="Ana Prueba") == con_nombre
+
+
+def test_conocido_bajo_una_derivacion_igual_registra_el_nombre() -> None:
+    """R42: la derivación no cambia lo del contacto ya registrado: el nombre que contesta se escribe."""
+    assert _plan(PREGUNTADO, sin_pregunta=True, nombre_dicho="Ana Prueba") == Plan(
+        atributos_del_nombre("Ana Prueba"), False
     )
 
 

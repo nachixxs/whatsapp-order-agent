@@ -174,6 +174,17 @@ def test_lo_escrito_en_el_contacto_sobrevive_a_la_confirmacion(memoria: Memoria)
     assert memoria.leer_charla(CONV, T0 + TTL_CHARLA).atributos == {}
 
 
+def test_la_hora_de_la_derivacion_sobrevive_a_la_confirmacion(memoria: Memoria) -> None:
+    """R47, R22: la hora del pase queda en la charla, sigue ahí al anotar y al confirmar, y vence con ella."""
+    memoria.anotar_derivacion(CONV, T0)
+
+    memoria.anotar_cliente(CONV, "hola", T0)
+    memoria.confirmar_escrito(CONV, _tomar(memoria), T0)
+
+    assert memoria.leer_charla(CONV, T0).derivada == T0
+    assert memoria.leer_charla(CONV, T0 + TTL_CHARLA).derivada is None
+
+
 # R23 y R24 · dedup y compuerta
 
 

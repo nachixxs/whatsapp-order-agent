@@ -1,16 +1,19 @@
 import logging
+import threading
 from datetime import timedelta
 
 import pytest
 
 from app.agente import Decision, PedirDatoFaltante
 from app.config import ConfigNegocio
+from app.confirmacion import candado, soltar_pedido_completo
 from app.memoria import CARRERA, ErrorMemoria, Memoria
 from app.pedidos import Pedido
 from app.respuestas import (
     MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION,
     MENSAJE_ERROR_AL_GUARDAR,
     MENSAJE_ERROR_INTERNO,
+    MENSAJE_NO_ENTENDIDO,
     MENSAJE_PEDIDO_CONFIRMADO,
     acuse_de_archivos,
     con_frase_de_horario,
@@ -24,15 +27,19 @@ from app.turno import Resultado, procesar_lote
 from tests.conftest import HORA_DE_PRUEBA, TELEFONO
 from tests.test_turno import (
     COMPLETO,
+    CONOCIDO,
     CONV,
     HORARIOS,
     NOMBRE,
+    REGISTRADA,
     _adjunto,
     _Agente,
     _archivo,
     _charla,
+    _con_registro,
     _confirmado,
     _confirmar,
+    _Contactos,
     _historial,
     _lanzar,
     _lote,
@@ -214,15 +221,15 @@ def test_un_segundo_si_despues_de_confirmar_no_contesta(
         _registrar(),
         _registrar(**COMPLETO),
         _registrar(cantidad=3, fecha_necesita="2026-10-09"),
-        _registrar(**COMPLETO | {"nombre_cliente": "Otro Nombre"}),
+        _registrar(**COMPLETO | {"nombre_cliente": "  cliente   PRUEBA "}),
         Decision("pedir_dato_faltante", PedirDatoFaltante(dato="producto")),
     ],
 )
 def test_lo_que_no_cambia_el_confirmado_no_contesta(
     memoria: Memoria, config: ConfigNegocio, decision: Decision
 ) -> None:
-    """R6: sin campos, los mismos datos (por valor; el nombre no es un cambio) o una repregunta: ni texto ni
-    turno del bot, y no arranca otro pedido."""
+    """R6: sin campos, los mismos datos (por valor; el mismo nombre con otras mayúsculas o espacios) o una
+    repregunta: ni texto ni turno del bot, y no arranca otro pedido."""
     _confirmado(memoria, config)
 
     assert _turno(memoria, config, decision, "gracias!") is None
@@ -316,6 +323,36 @@ def test_un_rechazo_sobre_el_confirmado_es_un_cambio(memoria: Memoria, config: C
     assert _historial(memoria)[-1] == f"[{CAMBIO}]"
 
 
+@pytest.mark.parametrize(
+    "decision", [_registrar(nombre_cliente="Otro Nombre"), _registrar(**COMPLETO | {"nombre_cliente": "Otro Nombre"})]
+)
+def test_ponelo_a_nombre_de_otro_es_un_cambio(memoria: Memoria, config: ConfigNegocio, decision: Decision) -> None:
+    """R6, R47: "ponelo a nombre de X" dentro de los 5 minutos no queda sin respuesta: es un cambio sobre el
+    confirmado, que no se toca, y deriva con la nota del confirmado."""
+    confirmado = _confirmado(memoria, config)
+
+    resultado = procesar_lote(CONV, [_mensaje("ponelo a nombre de otro")], config, memoria, _Agente(decision))
+
+    assert resultado == Resultado(
+        con_frase_de_horario(MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION, config, HORA_DE_PRUEBA),
+        nota_de_derivacion(CAMBIO, confirmado, NOMBRE, config), derivar=True,
+    )
+    charla = _charla(memoria)
+    assert charla.pedido is None
+    assert charla.toma is not None and charla.toma.pedido == confirmado
+
+
+def test_el_nombre_registrado_sobre_el_confirmado_no_es_un_cambio(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R6, R43: el nombre que ya estaba registrado no es un cambio, aunque el confirmado lleve otro."""
+    _confirmado(memoria, config)
+    contactos = _Contactos()
+
+    texto = _con_registro(memoria, config, _Agente(_registrar(nombre_cliente=REGISTRADA)), contactos, "dale", CONOCIDO)
+
+    assert texto is None
+    assert _charla(memoria).pedido is None and contactos.escritos == []
+
+
 def test_el_acuse_del_archivo_no_tapa_un_cambio_sobre_el_confirmado(
     memoria: Memoria, config: ConfigNegocio
 ) -> None:
@@ -364,3 +401,58 @@ def test_una_consulta_despues_de_confirmar_se_contesta(memoria: Memoria, config:
     _confirmado(memoria, config)
 
     assert _turno(memoria, config, HORARIOS, "¿a qué hora abren?") == respuesta_faq("horarios", config)
+
+
+# R47 · la conversación llega en otro estado que pending
+
+
+def test_soltar_el_pedido_completo_no_deja_confirmar_el_resumen(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R47: Chatwoot pasó la conversación a open por su cuenta y una persona la devolvió; el "sí" no confirma
+    el resumen que esa persona ya vio."""
+    _pendiente(memoria, config)
+    planilla = _Planilla()
+
+    soltar_pedido_completo(CONV, config, memoria)
+
+    assert _charla(memoria).pedido is None
+    assert _turno(memoria, config, _confirmar(True), "sí", planilla) == MENSAJE_NO_ENTENDIDO
+    assert planilla.filas == []
+
+
+def test_soltar_deja_el_pedido_a_medias(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R47: solo se suelta un pedido completo, como al derivar; uno a medias sigue."""
+    _turno(memoria, config, _registrar(producto="sellos"))
+
+    soltar_pedido_completo(CONV, config, memoria)
+
+    assert _pedido(memoria) == Pedido(telefono=TELEFONO, producto="sellos")
+
+
+def test_soltar_espera_el_candado_del_turno(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R47, R28: suelta con el mismo candado que el turno; con un turno adentro, espera."""
+    _pendiente(memoria, config)
+    hilo = threading.Thread(target=soltar_pedido_completo, args=(CONV, config, memoria))
+    with candado(CONV):
+        hilo.start()
+        hilo.join(timeout=0.3)
+        esperaba = hilo.is_alive()
+    hilo.join(timeout=5)
+
+    assert esperaba and not hilo.is_alive()
+    assert _charla(memoria).pedido is None
+
+
+def test_soltar_nunca_lanza(
+    memoria: Memoria, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """R47, R52: si la memoria falla, no lanza: deja un WARNING con el tipo de error y nada del cliente."""
+    _pendiente(memoria, config)
+    monkeypatch.setattr(memoria, "guardar_pedido", _fallar)
+    caplog.clear()
+
+    soltar_pedido_completo(CONV, config, memoria)
+
+    assert [registro.levelno for registro in caplog.records] == [logging.WARNING]
+    assert "error=ErrorMemoria" in caplog.text
+    for dato in (NOMBRE, TELEFONO, str(CONV)):
+        assert dato not in caplog.text

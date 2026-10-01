@@ -1,6 +1,7 @@
 """La confirmación de un pedido: toma, fila, carrera del "sí" y derivación (SPECS §7, R1 a R7 y R47)."""
 
 import logging
+import threading
 from dataclasses import dataclass, replace
 from datetime import datetime
 
@@ -18,6 +19,11 @@ from app.sheets import ErrorPlanilla, Planilla
 logger = logging.getLogger(__name__)
 
 CONFIRMADO = "pedido_confirmado"
+_CAMBIO = "cambio_sobre_pedido_confirmado"
+# R28: con un solo proceso alcanza un candado en memoria. No se limpia: es un int y un Lock por
+# conversación, y borrar uno que otro hilo está esperando dejaría entrar a dos turnos a la vez
+_candados: dict[int, threading.Lock] = {}
+_guarda = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -56,7 +62,7 @@ def pedido_confirmado(charla: Charla) -> Pedido | None:
 
 
 def carrera(
-    decision: Decision | SinTool, charla: Charla, config: ConfigNegocio, ahora: datetime
+    decision: Decision | SinTool, charla: Charla, registrado: str | None, config: ConfigNegocio, ahora: datetime
 ) -> Salida | None:
     """R6, hasta 5 minutos después de la fila. None es el camino normal: con el confirmado en el prompt (R7),
     un cambio llega como derivar_a_asesor y un registrar_pedido con otros datos es un pedido nuevo."""
@@ -64,14 +70,17 @@ def carrera(
     if confirmado is None or charla.toma is None or not charla.toma.en_carrera:
         return None
     argumentos = decision.argumentos if isinstance(decision, Decision) else None
+    cambio = Salida(_CAMBIO, MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION, error=True, motivo=_CAMBIO)
     if isinstance(argumentos, ConfirmarPedido) and not argumentos.acepta:  # un rechazo cambia, como en el viejo
-        cambio = "cambio_sobre_pedido_confirmado"
-        return Salida(cambio, MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION, error=True, motivo=cambio)
+        return cambio
     if isinstance(argumentos, RegistrarPedido):
-        campos = argumentos.model_dump(exclude={"nombre_cliente"})  # el nombre no es un cambio
-        pedido, _ = sumar_campos(confirmado, campos, config, ahora)  # por valor; un descartado no cambia nada
-        if pedido != confirmado:
+        pedido, _ = sumar_campos(confirmado, argumentos.model_dump(), config, ahora)  # por valor (R14 limpia)
+        if pedido.model_copy(update={"nombre_cliente": confirmado.nombre_cliente}) != confirmado:
             return None
+        # El nombre del confirmado o el registrado no son un cambio; "ponelo a nombre de X" sí
+        nombres = {nombre.casefold() for nombre in (confirmado.nombre_cliente, registrado) if nombre}
+        if (pedido.nombre_cliente or "").casefold() not in nombres:
+            return cambio
     elif not isinstance(argumentos, ConfirmarPedido | PedirDatoFaltante):
         return None
     return Salida("pedido_confirmado_sin_cambios", None, marcar=False)
@@ -105,6 +114,28 @@ def derivada(
     pedido = charla.pedido or pedido_confirmado(charla)
     nota = nota_de_derivacion(salida.motivo, pedido, nombre or (pedido and pedido.nombre_cliente), config)
     return replace(salida, texto=con_frase_de_horario(salida.texto, config, ahora), nota=nota)
+
+
+def soltar_completo(conversacion: int, memoria: Memoria, ahora: datetime) -> Charla:
+    """R47: un "sí" no confirma el resumen que ya vio una persona. Devuelve la charla de antes, para la nota."""
+    charla = memoria.leer_charla(conversacion, ahora)
+    if charla.pedido is not None and charla.pedido.completo:
+        memoria.guardar_pedido(conversacion, None, charla.generacion, ahora)
+    return charla
+
+
+def soltar_pedido_completo(conversacion: int, config: ConfigNegocio, memoria: Memoria) -> None:
+    """R47: para cuando la conversación llega en otro estado que `pending`. Nunca lanza."""
+    with candado(conversacion):
+        try:
+            soltar_completo(conversacion, memoria, config.ahora())
+        except Exception as error:  # R52: el tipo, nunca el mensaje
+            logger.warning("confirmacion: no se soltó el pedido error=%s", type(error).__name__)
+
+
+def candado(conversacion: int) -> threading.Lock:
+    with _guarda:  # sin la guarda, dos hilos podrían crear cada uno su Lock para la misma conversación
+        return _candados.setdefault(conversacion, threading.Lock())
 
 
 def _fila(pedido: Pedido, ahora: datetime) -> dict[str, str]:
