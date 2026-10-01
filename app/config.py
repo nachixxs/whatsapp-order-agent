@@ -1,6 +1,7 @@
 """Config del negocio con Pydantic, el reloj del negocio (R37) y el horario con feriados (R39)."""
 
-from datetime import date, datetime, time
+import logging
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Annotated
 from zoneinfo import ZoneInfo, available_timezones
@@ -11,6 +12,10 @@ RAIZ = Path(__file__).resolve().parent.parent
 RUTA_POR_DEFECTO = RAIZ / "config" / "negocio.json"
 # En el orden de weekday(): 0 es lunes
 DIAS = ("lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo")
+DIAS_DE_BUSQUEDA = 31  # R39: hasta dónde busca la próxima apertura
+AVISO_FERIADOS = timedelta(days=60)  # R39
+
+logger = logging.getLogger(__name__)
 
 Texto = Annotated[str, Field(min_length=1)]
 
@@ -28,8 +33,8 @@ class Franja(_Base):
     def _abre_antes_de_cerrar(self) -> "Franja":
         if self.abre.tzinfo is not None or self.cierra.tzinfo is not None:
             raise ValueError("la franja va en hora local, sin zona")
-        if self.abre >= self.cierra:
-            raise ValueError("la franja cierra antes de abrir")
+        if self.abre >= self.cierra:  # sin franjas que crucen la medianoche
+            raise ValueError("la franja cierra antes de abrir (medianoche se escribe 23:59)")
         return self
 
 
@@ -43,6 +48,12 @@ class Horario(_Base):
     viernes: list[Franja]
     sabado: list[Franja]
     domingo: list[Franja]
+
+    @model_validator(mode="after")
+    def _abre_algun_dia(self) -> "Horario":
+        if not any(self.del_dia(dia) for dia in range(len(DIAS))):
+            raise ValueError("el horario no abre ningún día")
+        return self
 
     def del_dia(self, dia: int) -> list[Franja]:
         return getattr(self, DIAS[dia])
@@ -112,6 +123,23 @@ class ConfigNegocio(_Base):
         franjas = self.horario.del_dia(local.weekday())
         return any(franja.abre <= hora < franja.cierra for franja in franjas)
 
+    def proxima_apertura(self, ahora: datetime) -> datetime | None:
+        """R38, R39: la primera apertura después de ahora, nunca en feriado; None si no hay en 31 días."""
+        local = self._en_zona(ahora)
+        for adelanto in range(DIAS_DE_BUSQUEDA + 1):  # hoy y los 31 días que siguen
+            dia = local.date() + timedelta(days=adelanto)
+            if dia in self.feriados:
+                continue
+            franjas = self.horario.del_dia(dia.weekday())
+            aperturas = [datetime.combine(dia, franja.abre, self.zona) for franja in franjas]
+            if siguientes := [apertura for apertura in aperturas if apertura > local]:
+                return min(siguientes)  # min: las franjas del día pueden venir en cualquier orden
+        return None
+
+    def feriados_por_vencer(self, ahora: datetime) -> bool:
+        """R39: no hay feriados cargados o el último está a menos de 60 días."""
+        return not self.feriados or self.feriados[-1] - self._en_zona(ahora).date() < AVISO_FERIADOS
+
     def _en_zona(self, instante: datetime) -> datetime:
         if instante.tzinfo is None:  # R37: una hora sin zona se leería como la del servidor
             raise ValueError("hora sin zona: usar config.ahora()")
@@ -121,4 +149,7 @@ class ConfigNegocio(_Base):
 def cargar_config(ruta: Path = RUTA_POR_DEFECTO) -> ConfigNegocio:
     if not ruta.is_file():
         raise FileNotFoundError(f"Falta la config del negocio: {ruta}")
-    return ConfigNegocio.model_validate_json(ruta.read_text(encoding="utf-8"))  # R40
+    config = ConfigNegocio.model_validate_json(ruta.read_text(encoding="utf-8"))  # R40
+    if config.feriados_por_vencer(config.ahora()):  # R39
+        logger.warning("config: cargar feriados nuevos, el último está a menos de 60 días o no hay")
+    return config
