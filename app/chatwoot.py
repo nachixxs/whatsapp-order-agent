@@ -140,30 +140,39 @@ def parsear_evento(cuerpo: bytes) -> MensajeEntrante | None:
 
 
 class ClienteChatwoot:
-    """Responde en una conversacion de Chatwoot. Credenciales perezosas (R53)."""
+    """Habla con la API de Chatwoot. Credenciales perezosas (R53). Nada lanza: devuelven True solo con 2xx."""
 
     def __init__(self, cliente_http: httpx.Client | None = None) -> None:
         self._cliente_http = cliente_http
 
-    def responder(self, id_conversacion: int, texto: str) -> None:
+    def _post(self, id_conversacion: int, ruta: str, cuerpo: dict[str, Any], accion: str) -> bool:
         base_url = os.environ.get("CHATWOOT_URL", "")
         account_id = os.environ.get("CHATWOOT_ACCOUNT_ID", "")
         token = os.environ.get("CHATWOOT_BOT_TOKEN", "")
         if not (base_url and account_id and token):
-            logger.error("Chatwoot: faltan credenciales, no se pudo responder")
-            return
-        url = f"{base_url}/api/v1/accounts/{account_id}/conversations/{id_conversacion}/messages"
+            logger.error("Chatwoot: faltan credenciales, no se pudo %s", accion)
+            return False
+        url = f"{base_url}/api/v1/accounts/{account_id}/conversations/{id_conversacion}/{ruta}"
         propio = self._cliente_http is None
         cliente = self._cliente_http or httpx.Client(timeout=TIMEOUT_SEGUNDOS)
         try:
-            respuesta = cliente.post(
-                url,
-                json={"content": texto, "message_type": "outgoing"},
-                headers={"api_access_token": token},
-            )
-            respuesta.raise_for_status()
-        except Exception:  # R53: un fallo de red no expone el token ni tumba el turno
-            logger.error("Chatwoot: fallo al enviar la respuesta")
+            cliente.post(url, json=cuerpo, headers={"api_access_token": token}).raise_for_status()
+            return True
+        except Exception:  # R53: un fallo de red no expone el token ni tumba el turno; nunca el texto ni el error
+            logger.error("Chatwoot: fallo al %s", accion)
+            return False
         finally:
             if propio:
                 cliente.close()
+
+    def responder(self, id_conversacion: int, texto: str) -> bool:
+        return self._post(id_conversacion, "messages", {"content": texto, "message_type": "outgoing"}, "enviar la respuesta")
+
+    def nota_interna(self, id_conversacion: int, texto: str) -> bool:
+        """Aviso al asesor: un mensaje privado, el cliente no lo ve."""
+        cuerpo = {"content": texto, "message_type": "outgoing", "private": True}
+        return self._post(id_conversacion, "messages", cuerpo, "enviar la nota interna")
+
+    def pasar_a_persona(self, id_conversacion: int) -> bool:
+        """R47: derivar es dejar la conversacion en `open`; desde ahi el bot ya no contesta."""
+        return self._post(id_conversacion, "toggle_status", {"status": "open"}, "pasar la conversacion a open")
