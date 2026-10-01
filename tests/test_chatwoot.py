@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
-from app.chatwoot import ClienteChatwoot, parsear_evento
+from app.chatwoot import ClienteChatwoot, parsear_estado, parsear_evento
 from tests.conftest import _payload
 
 
@@ -34,6 +34,47 @@ def test_parsear_evento_tipos_inesperados_en_campos() -> None:
     assert mensaje is not None
     assert mensaje.id_conversacion is None
     assert mensaje.adjuntos == []
+
+
+def test_parsear_estado_evento_de_conversacion() -> None:
+    """R47: en un evento de conversacion, id, estado, cuenta e inbox vienen en la raiz (Chatwoot v4.18.0)."""
+    cuerpo = {"event": "conversation_status_changed", "id": 555, "status": "open", "inbox_id": 2, "account": {"id": 1}}
+    evento = parsear_estado(json.dumps(cuerpo).encode())
+    assert evento is not None
+    assert (evento.id_conversacion, evento.estado_conversacion, evento.account_id, evento.inbox_id) == (555, "open", 1, 2)
+    assert parsear_evento(json.dumps(cuerpo).encode()) is None  # para el turno sigue sin ser un mensaje (R48)
+
+
+@pytest.mark.parametrize("cambios", [{}, {"message_type": "outgoing"}, {"private": True}])
+def test_parsear_estado_mensaje_usa_el_mismo_id_que_el_turno(cambios: dict[str, object]) -> None:
+    """R47: en un mensaje de cualquier tipo el id y el estado salen de `conversation`, igual que en el turno."""
+    cuerpo = json.dumps(_payload(conversation={"id": 555, "status": "snoozed"}, **cambios)).encode()
+    evento = parsear_estado(cuerpo)
+    assert evento is not None
+    assert (evento.id_conversacion, evento.estado_conversacion, evento.account_id, evento.inbox_id) == (555, "snoozed", 1, 2)
+    mensaje = parsear_evento(cuerpo)
+    assert mensaje is None or mensaje.id_conversacion == evento.id_conversacion
+
+
+@pytest.mark.parametrize(
+    "cuerpo",
+    [
+        pytest.param(b"{no es json", id="json_roto"),
+        pytest.param(b"[1]", id="lista"),
+        pytest.param(b"[" * 50_000 + b"]" * 50_000, id="anidado_profundo"),
+        pytest.param(b"{}", id="vacio"),
+        pytest.param(b'{"event": 5, "conversation": 7}', id="tipos_raros"),
+        pytest.param(
+            b'{"event": "conversation_updated", "id": {"x": 1}, "status": ["open"], "account": "x", "inbox_id": [1]}',
+            id="campos_con_otro_tipo",
+        ),
+        pytest.param('{"event": "conversation_opened", "id": 1, "status": "a\\ud83d"}'.encode(), id="surrogate_escapado"),
+    ],
+)
+def test_parsear_estado_nunca_lanza(cuerpo: bytes) -> None:
+    """R51: un cuerpo roto o con tipos raros da None o un evento sin id; nunca una excepcion."""
+    evento = parsear_estado(cuerpo)
+    assert evento is None or evento.id_conversacion is None or evento.id_conversacion == 1
 
 
 def test_responder_sin_credenciales_no_lanza(caplog: pytest.LogCaptureFixture) -> None:

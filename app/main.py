@@ -15,7 +15,8 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.chatwoot import ClienteChatwoot, MensajeEntrante, parsear_evento
+from app.chatwoot import ClienteChatwoot, MensajeEntrante, parsear_estado, parsear_evento
+from app.confirmacion import soltar_pedido_completo
 from app.config import RUTA_POR_DEFECTO, ConfigNegocio, cargar_config
 from app.formato import alias_conversacion, para_log
 from app.memoria import Memoria
@@ -27,18 +28,15 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 logger = logging.getLogger(__name__)
 
 CARPETA_CAPTURAS = Path(__file__).resolve().parent.parent / "capturas"
-VARIABLES_CHATWOOT = (
-    "CHATWOOT_URL",
-    "CHATWOOT_ACCOUNT_ID",
-    "CHATWOOT_INBOX_ID",
-    "CHATWOOT_BOT_TOKEN",
-    "CHATWOOT_WEBHOOK_SECRET",
+VARIABLES_CHATWOOT = (  # R55: sin el token de agente, R45 (el nombre en el contacto) queda apagado sin aviso
+    "CHATWOOT_URL", "CHATWOOT_ACCOUNT_ID", "CHATWOOT_INBOX_ID",
+    "CHATWOOT_BOT_TOKEN", "CHATWOOT_AGENTE_TOKEN", "CHATWOOT_WEBHOOK_SECRET",
 )
 FORMATO_LOG = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 TOPE_BYTES_BODY = 1_000_000
 TOLERANCIA_SEGUNDOS = 300
 ESPERA_LOTE_SEGUNDOS = 8.0  # R30: silencio que cierra la ventana de una rafaga de archivos
-# Raiz del repo: `*.db` esta en .gitignore, asi que la base nunca se versiona; y no depende del cwd.
+# Raiz del repo (`*.db` esta en .gitignore): la base nunca se versiona y no depende del cwd
 MEMORIA_RUTA_POR_DEFECTO = Path(__file__).resolve().parent.parent / "memoria.db"
 
 
@@ -59,8 +57,7 @@ def workers_pedidos(argv: Sequence[str], entorno: Mapping[str, str]) -> int:
 
 @asynccontextmanager
 async def _ciclo_de_vida(app: FastAPI) -> AsyncIterator[None]:
-    # R54: config, base rota o ruta invalida se descubren al arrancar, no con el primer mensaje.
-    # Solo corre con el servidor (o `with TestClient`): importar la app en pytest no toca el disco.
+    # R54: config o base rota se descubren al arrancar. Solo corre con el servidor (o `with TestClient`)
     if workers_pedidos(sys.argv, os.environ) > 1:
         # R28: dos procesos sobre el mismo archivo SQLite pisan la misma charla
         raise RuntimeError("R28: el bot corre con un solo worker (quitar --workers / WEB_CONCURRENCY)")
@@ -108,14 +105,11 @@ def _firma_valida(cuerpo: bytes, firma: str, timestamp: str, config: ConfigNegoc
 
 
 def _cuenta_valida(mensaje: MensajeEntrante) -> bool:
-    esperado_cuenta = os.environ.get("CHATWOOT_ACCOUNT_ID")
-    esperado_inbox = os.environ.get("CHATWOOT_INBOX_ID")
-    if esperado_cuenta is None or esperado_inbox is None:
-        return False
-    try:
-        return mensaje.account_id == int(esperado_cuenta) and mensaje.inbox_id == int(esperado_inbox)
+    try:  # variable ausente o no numerica: int() lanza y la cuenta no es valida
+        esperado = (int(os.environ.get("CHATWOOT_ACCOUNT_ID", "")), int(os.environ.get("CHATWOOT_INBOX_ID", "")))
     except ValueError:
         return False
+    return (mensaje.account_id, mensaje.inbox_id) == esperado
 
 
 @dataclass
@@ -132,8 +126,6 @@ def _acumular(mensaje: MensajeEntrante, cliente: ClienteChatwoot, config: Config
     """R30: un adjunto abre la ventana de su conversacion; todo mensaje que llega con la ventana abierta se
     suma y reinicia la espera. False si no hay ventana ni adjunto: el mensaje sale directo."""
     conversacion = mensaje.id_conversacion
-    if conversacion is None:
-        return False
     with _candado:
         ventana = _ventanas.get(conversacion)
         if ventana is None:
@@ -157,18 +149,19 @@ def _cerrar_ventana(conversacion: int, cliente: ClienteChatwoot, config: ConfigN
         _procesar_turno(conversacion, ventana.lote, cliente, config, memoria)
 
 
+def _descartar_ventana(conversacion: int) -> None:
+    """R47, R30: la conversacion salio de `pending`, lo acumulado no se procesa."""
+    with _candado:
+        ventana = _ventanas.pop(conversacion, None)
+    if ventana is not None and ventana.timer is not None:
+        ventana.timer.cancel()
+
+
 def _procesar_turno(
-    id_conversacion: int | None,
-    lote: list[MensajeEntrante],
-    cliente: ClienteChatwoot,
-    config: ConfigNegocio,
-    memoria: Memoria,
+    id_conversacion: int, lote: list[MensajeEntrante], cliente: ClienteChatwoot, config: ConfigNegocio, memoria: Memoria
 ) -> None:
     """Corre en el threadpool (BackgroundTasks) o en el hilo del timer: SQLite y la API bloquean, y el
     event loop tiene que seguir libre para el webhook (R50)."""
-    if id_conversacion is None:
-        logger.warning("Webhook Chatwoot: sin id de conversacion, no se responde")
-        return
     resultado = procesar_lote(id_conversacion, lote, config, memoria)
     # R47: respuesta, nota y open en ese orden; un paso que falla no frena a los siguientes
     pasos = (("responder", resultado.texto, cliente.responder), ("nota_interna", resultado.nota, cliente.nota_interna))
@@ -195,13 +188,11 @@ def _capturar_payload(cuerpo: bytes) -> None:
 
 async def _leer_cuerpo_con_tope(request: Request) -> bytes | None:
     """None si el body supera TOPE_BYTES_BODY, aunque el Content-Length mienta."""
-    content_length = request.headers.get("content-length")
-    if content_length is not None:
-        try:
-            if int(content_length) > TOPE_BYTES_BODY:
-                return None
-        except ValueError:
-            pass
+    try:
+        if int(request.headers.get("content-length", 0)) > TOPE_BYTES_BODY:
+            return None
+    except ValueError:  # no numerico o de miles de digitos: manda el conteo del stream
+        pass
     partes = bytearray()
     async for fragmento in request.stream():
         partes.extend(fragmento)
@@ -220,30 +211,34 @@ async def webhook_chatwoot(
 ) -> dict[str, str] | JSONResponse:
     cuerpo = await _leer_cuerpo_con_tope(request)
     if cuerpo is None:
-        # 413 no dispara reintentos de Chatwoot (R50: solo reintenta 429/500).
-        return JSONResponse({"estado": "ignorado"}, status_code=413)
-    # R50: siempre 200, nunca se provocan reintentos en bucle
+        return JSONResponse({"estado": "ignorado"}, status_code=413)  # R50: 413 no dispara reintentos (solo 429/500)
     firma = request.headers.get("x-chatwoot-signature", "")
     timestamp = request.headers.get("x-chatwoot-timestamp", "")
     if not _firma_valida(cuerpo, firma, timestamp, config):
         logger.warning("Webhook Chatwoot: autenticacion fallida")
         return {"estado": "ignorado"}
     mensaje = parsear_evento(cuerpo)
-    if mensaje is None:
+    evento = mensaje or parsear_estado(cuerpo)  # R47: los eventos de estado y de la persona tambien cuentan
+    if evento is None or evento.id_conversacion is None:
         logger.info("Webhook Chatwoot: evento descartado")
         return {"estado": "ignorado"}
-    if not _cuenta_valida(mensaje):
+    if not _cuenta_valida(evento):
         logger.warning("Webhook Chatwoot: account o inbox inesperado")
         return {"estado": "ignorado"}
-    if mensaje.estado_conversacion != "pending":
-        # R47: con `open`, `snoozed`, `resolved` o sin estado la conversacion no es del bot
-        logger.info("Webhook Chatwoot: conversacion no pendiente estado=%s alias=%s", para_log(mensaje.estado_conversacion), alias_conversacion(mensaje.id_conversacion))
+    alias = alias_conversacion(evento.id_conversacion)
+    if evento.estado_conversacion != "pending":
+        # R47: con `open`, `snoozed`, `resolved` o sin estado no es del bot: ni turno ni archivos pendientes, y un
+        # "si" no confirma el resumen que vio una persona si la conversacion vuelve a `pending`
+        logger.info("Webhook Chatwoot: conversacion no pendiente estado=%s alias=%s", para_log(evento.estado_conversacion), alias)
+        _descartar_ventana(evento.id_conversacion)
+        background_tasks.add_task(soltar_pedido_completo, evento.id_conversacion, config, memoria)
         return {"estado": "ignorado"}
-    alias = alias_conversacion(mensaje.id_conversacion)
+    if mensaje is None:  # `pending` pero no es un mensaje entrante (R48)
+        return {"estado": "ignorado"}
     logger.info("Webhook Chatwoot: mensaje aceptado alias=%s evento=%s adjuntos=%d", alias, para_log(mensaje.evento), len(mensaje.adjuntos))
     _capturar_payload(cuerpo)
     if not _acumular(mensaje, cliente, config, memoria):
-        background_tasks.add_task(_procesar_turno, mensaje.id_conversacion, [mensaje], cliente, config, memoria)
+        background_tasks.add_task(_procesar_turno, evento.id_conversacion, [mensaje], cliente, config, memoria)
     return {"estado": "ok"}
 
 
@@ -251,6 +246,4 @@ async def webhook_chatwoot(
 def salud() -> JSONResponse:
     # R55: def (no async), sin llamar a Chatwoot ni a ningun servicio externo
     completa = all(os.environ.get(nombre) for nombre in VARIABLES_CHATWOOT)
-    if completa:
-        return JSONResponse({"estado": "ok"}, status_code=200)
-    return JSONResponse({"estado": "degradado"}, status_code=503)
+    return JSONResponse({"estado": "ok" if completa else "degradado"}, status_code=200 if completa else 503)

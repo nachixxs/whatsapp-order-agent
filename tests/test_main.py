@@ -14,15 +14,12 @@ from app.chatwoot import ClienteChatwoot
 from app.config import ConfigNegocio
 from app.main import app, get_cliente_chatwoot, get_config, get_memoria, workers_pedidos
 from app.memoria import Memoria
+from app.pedidos import Pedido
 from app.turno import Resultado
-from tests.conftest import _payload as _payload_base
+from tests.conftest import TELEFONO, _payload
+from tests.test_turno import COMPLETO
 
 SECRETO = "secreto-de-prueba"
-
-
-def _payload(**cambios: object) -> dict[str, object]:
-    """R47: el bot solo atiende conversaciones `pending`; el payload base de conftest viene `open`."""
-    return _payload_base(**{"conversation": {"id": 555, "status": "pending"}, **cambios})
 
 
 class ClienteFalso(ClienteChatwoot):
@@ -53,6 +50,7 @@ def _configurar_entorno(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHATWOOT_ACCOUNT_ID", "1")
     monkeypatch.setenv("CHATWOOT_INBOX_ID", "2")
     monkeypatch.setenv("CHATWOOT_BOT_TOKEN", "token-de-prueba")
+    monkeypatch.setenv("CHATWOOT_AGENTE_TOKEN", "token-de-agente-de-prueba")
     monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", SECRETO)
 
 
@@ -196,7 +194,7 @@ def test_webhook_inbox_equivocado_se_descarta(
     [
         {"message_type": "outgoing"},
         {"private": True},
-        {"event": "conversation_status_changed"},
+        {"event": "message_updated"},
     ],
 )
 def test_webhook_r48_se_descarta_sin_eco(
@@ -794,10 +792,129 @@ def test_r47_conversacion_no_pendiente_no_llega_al_turno_ni_a_los_archivos(
     assert "no pendiente" in caplog.text
 
 
-def test_r47_conversacion_pending_si_llega_al_turno(
-    client: TestClient, config: ConfigNegocio, cliente_falso: ClienteFalso, turno_falso: TurnoFalso, monkeypatch: pytest.MonkeyPatch
+def test_salud_degradado_sin_el_token_de_agente(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """R47: `pending` es el unico estado que atiende el bot."""
+    """R55: sin CHATWOOT_AGENTE_TOKEN el bot arranca pero R45 (el nombre en el contacto) quedaria apagado sin aviso."""
     _configurar_entorno(monkeypatch)
-    _post(client, config, json.dumps(_payload()).encode())
-    assert len(turno_falso.llamados) == 1
+    monkeypatch.delenv("CHATWOOT_AGENTE_TOKEN")
+    respuesta = client.get("/salud")
+    assert (respuesta.status_code, respuesta.json()) == (503, {"estado": "degradado"})
+
+
+def _evento_conversacion(evento: str = "conversation_status_changed", estado: str = "open", **cambios: object) -> dict[str, object]:
+    """Forma de Chatwoot v4.18.0 (`conversation.webhook_data`): la conversacion en la raiz, sin `inbox`."""
+    base: dict[str, object] = {
+        "event": evento, "id": 555, "status": estado, "inbox_id": 2, "account": {"id": 1, "name": "Cuenta"},
+        "messages": [], "changed_attributes": [{"status": {"previous_value": "pending", "current_value": estado}}],
+    }
+    return base | cambios
+
+
+@pytest.fixture
+def soltados(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Reemplaza a soltar_pedido_completo: anota la conversacion de cada llamado."""
+    llamados: list[int] = []
+    monkeypatch.setattr("app.main.soltar_pedido_completo", lambda conversacion, config, memoria: llamados.append(conversacion))
+    return llamados
+
+
+@pytest.mark.parametrize("estado", ["open", "snoozed", "resolved"])
+@pytest.mark.parametrize("evento", ["conversation_status_changed", "conversation_opened", "conversation_updated"])
+def test_r47_evento_de_conversacion_fuera_de_pending_suelta_el_pedido(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int],
+    cliente_falso: ClienteFalso, turno_falso: TurnoFalso, evento: str, estado: str,
+) -> None:
+    """R47: cualquier evento de conversacion firmado, fuera de `pending`, suelta el pedido completo; el bot no contesta."""
+    _configurar_entorno(monkeypatch)
+    respuesta = _post(client, config, json.dumps(_evento_conversacion(evento, estado)).encode())
+    assert (respuesta.status_code, respuesta.json()) == (200, {"estado": "ignorado"})
+    assert soltados == [555]
+    assert turno_falso.llamados == [] and cliente_falso.respuestas == []
+
+
+@pytest.mark.parametrize("estado", ["open", "snoozed", "resolved"])
+@pytest.mark.parametrize("cambios", [{"message_type": "outgoing"}, {"message_type": "incoming"}, {"private": True}])
+def test_r47_mensaje_de_cualquier_tipo_fuera_de_pending_suelta_el_pedido(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int],
+    turno_falso: TurnoFalso, estado: str, cambios: dict[str, object],
+) -> None:
+    """R47: un mensaje del cliente, de la persona o una nota, con la conversacion fuera de `pending`, suelta el pedido."""
+    _configurar_entorno(monkeypatch)
+    payload = _payload(conversation={"id": 555, "status": estado}, **cambios)
+    assert _post(client, config, json.dumps(payload).encode()).json() == {"estado": "ignorado"}
+    assert soltados == [555]
+    assert turno_falso.llamados == []
+
+
+def test_r47_en_pending_ningun_evento_suelta_el_pedido(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int], turno_falso: TurnoFalso
+) -> None:
+    """R47: en `pending` la conversacion es del bot: ni un evento de conversacion ni su propio mensaje sueltan nada."""
+    _configurar_entorno(monkeypatch)
+    cuerpos = (_evento_conversacion("conversation_updated", "pending"), _payload(message_type="outgoing"), _payload())
+    for cuerpo in cuerpos:
+        assert _post(client, config, json.dumps(cuerpo).encode()).status_code == 200
+    assert soltados == []
+    assert len(turno_falso.llamados) == 1  # solo el entrante
+
+
+@pytest.mark.parametrize(
+    "cuerpo",
+    [
+        pytest.param(_evento_conversacion(account={"id": 999}), id="cuenta_conversacion"),
+        pytest.param(_evento_conversacion(inbox_id=999), id="inbox_conversacion"),
+        pytest.param(_payload(conversation={"id": 555, "status": "open"}, account={"id": 999}), id="cuenta_mensaje"),
+        pytest.param(_payload(conversation={"id": 555, "status": "open"}, inbox={"id": 999}), id="inbox_mensaje"),
+        pytest.param(_evento_conversacion(id=None), id="sin_id"),
+        pytest.param(_evento_conversacion(id="no es un numero"), id="id_roto"),
+        pytest.param({"event": "contact_updated", "id": 9, "account": {"id": 1}}, id="otro_evento"),
+    ],
+)
+def test_r47_evento_ajeno_o_roto_no_suelta_nada(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int], cuerpo: dict[str, object]
+) -> None:
+    """R47, R49, R51: otra cuenta u otro inbox, sin id o de otro tipo de evento, no toca el pedido de nadie."""
+    _configurar_entorno(monkeypatch)
+    assert _post(client, config, json.dumps(cuerpo).encode()).json() == {"estado": "ignorado"}
+    assert soltados == []
+
+
+def test_r47_firma_mala_o_vieja_no_suelta_nada(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int]
+) -> None:
+    """R49: sin firma valida, un evento de conversacion no puede borrarle el pedido a nadie."""
+    _configurar_entorno(monkeypatch)
+    cuerpo = json.dumps(_evento_conversacion()).encode()
+    _post(client, config, cuerpo, secreto="otro-secreto")
+    _post(client, config, cuerpo, desfase=3_600)
+    client.post("/webhook/chatwoot", content=cuerpo)
+    assert soltados == []
+
+
+def test_r47_el_evento_suelta_el_pedido_completo_de_verdad(
+    client: TestClient, config: ConfigNegocio, memoria: Memoria, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R47: con la funcion real, un evento en `open` deja la charla sin el pedido completo (un "si" ya no confirma)."""
+    _configurar_entorno(monkeypatch)
+    charla = memoria.leer_charla(555, config.ahora())
+    memoria.guardar_pedido(555, Pedido(telefono=TELEFONO, **COMPLETO), charla.generacion, config.ahora())
+    assert memoria.leer_charla(555, config.ahora()).pedido is not None
+    _post(client, config, json.dumps(_evento_conversacion()).encode())
+    assert memoria.leer_charla(555, config.ahora()).pedido is None
+
+
+def test_r47_evento_fuera_de_pending_descarta_la_ventana_de_archivos(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int],
+    turno_falso: TurnoFalso, timer_falso: type[TimerFalso],
+) -> None:
+    """R47, R30: con la ventana abierta, un evento fuera de `pending` la cierra, cancela el timer y no procesa lo acumulado."""
+    _configurar_entorno(monkeypatch)
+    _post(client, config, _archivo(1, 1))
+    _post(client, config, _archivo(2, 2, conversacion=777))  # otra conversacion: su ventana sigue
+    assert set(app_main._ventanas) == {555, 777}
+    _post(client, config, json.dumps(_evento_conversacion()).encode())
+    assert set(app_main._ventanas) == {777}
+    assert timer_falso.creados[0].cancelado and not timer_falso.creados[1].cancelado
+    timer_falso.creados[0].disparar()  # un timer que ya estaba en vuelo no encuentra nada que procesar
+    assert turno_falso.llamados == [] and soltados == [555]

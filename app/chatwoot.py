@@ -122,25 +122,34 @@ def _armar_mensaje(crudo: dict[str, Any]) -> MensajeEntrante:
     )
 
 
-def parsear_evento(cuerpo: bytes) -> MensajeEntrante | None:
-    """R51: nunca lanza. Devuelve un mensaje solo si es procesable (R48)."""
+def _cargar(cuerpo: bytes) -> dict[str, Any] | None:
     try:
         crudo = json.loads(cuerpo)
     except Exception:  # R51: JSON invalido, anidado (RecursionError) o bytes raros
         return None
-    if not isinstance(crudo, dict):
-        return None
-    if crudo.get("event") != "message_created":
-        return None
-    # R48: solo incoming; otras formas de message_type (numericas, etc.) se descartan
-    # por ahora y se revisan contra un Chatwoot real en la tarea 1.6.
-    if crudo.get("message_type") != "incoming":
-        return None
-    if _booleano(crudo.get("private")):
+    return crudo if isinstance(crudo, dict) else None
+
+
+def parsear_evento(cuerpo: bytes) -> MensajeEntrante | None:
+    """R51: nunca lanza. Devuelve un mensaje solo si es procesable (R48): incoming y no privado."""
+    crudo = _cargar(cuerpo)
+    if crudo is None or crudo.get("event") != "message_created" or crudo.get("message_type") != "incoming":
         return None
     try:
-        return _armar_mensaje(crudo)
+        return None if _booleano(crudo.get("private")) else _armar_mensaje(crudo)
     except Exception:  # R51: un campo con un tipo inesperado no tumba el parseo
+        return None
+
+
+def parsear_estado(cuerpo: bytes) -> MensajeEntrante | None:
+    """R47, R51: id, estado, cuenta e inbox de cualquier evento. Nunca lanza. Un evento de conversacion los trae en la
+    raiz (`id`, `status`, `inbox_id`, `account`); uno de mensaje, en `conversation` e `inbox` (Chatwoot v4.18.0)."""
+    crudo = _cargar(cuerpo)
+    if crudo is not None and _texto(crudo.get("event")).startswith("conversation_"):
+        crudo = {**crudo, "conversation": crudo, "inbox": {"id": crudo.get("inbox_id")}}
+    try:
+        return None if crudo is None else _armar_mensaje(crudo)
+    except Exception:  # R51
         return None
 
 
