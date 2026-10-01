@@ -12,11 +12,14 @@ from app.respuestas import (
     MENSAJE_ERROR_INTERNO,
     MENSAJE_PEDIDO_CONFIRMADO,
     acuse_de_archivos,
+    con_frase_de_horario,
+    nota_de_archivos,
+    nota_de_derivacion,
     pregunta_por_dato,
     respuesta_faq,
 )
 from app.sheets import ErrorPlanilla
-from app.turno import procesar_lote
+from app.turno import Resultado, procesar_lote
 from tests.conftest import HORA_DE_PRUEBA, TELEFONO
 from tests.test_turno import (
     COMPLETO,
@@ -31,6 +34,7 @@ from tests.test_turno import (
     _confirmar,
     _historial,
     _lanzar,
+    _lote,
     _mensaje,
     _pedido,
     _pendiente,
@@ -46,6 +50,7 @@ FILA = {
     "producto": "sellos", "material": "goma", "medidas": "4x2 cm", "cantidad": "3", "tiene_diseno": "si",
     "archivos": "", "fecha_necesita": "2026-10-09",
 }
+CAMBIO = "cambio_sobre_pedido_confirmado"  # R6: el motivo de la derivación
 
 
 # R1 a R3 · la escritura
@@ -68,7 +73,7 @@ def test_el_si_escribe_la_fila_y_dice_listo(memoria: Memoria, config: ConfigNego
 def test_la_fila_lleva_los_archivos_del_pedido(memoria: Memoria, config: ConfigNegocio) -> None:
     """R29, R9: la celda archivos lleva una línea por archivo, con su hora del negocio y su referencia."""
     adjunto = _adjunto("file", "pdf")
-    procesar_lote(CONV, [_archivo(adjunto)], config, memoria, _Agente(), _Planilla())
+    _lote(CONV, [_archivo(adjunto)], config, memoria, _Agente(), _Planilla())
     _turno(memoria, config, _registrar(**COMPLETO))
     planilla = _Planilla()
 
@@ -123,8 +128,8 @@ def test_una_toma_que_quedo_en_escritura_no_cuenta_como_confirmada(
     assert _turno(memoria, config, _confirmar(True), "sí", planilla) == MENSAJE_ERROR_INTERNO
     agente = _Agente(HORARIOS)
 
-    procesar_lote(CONV, [_mensaje("¿a qué hora abren?")], config, memoria, agente, _Planilla())
-    texto = procesar_lote(CONV, [_archivo()], config, memoria, _Agente(), _Planilla())
+    _lote(CONV, [_mensaje("¿a qué hora abren?")], config, memoria, agente, _Planilla())
+    texto = _lote(CONV, [_archivo()], config, memoria, _Agente(), _Planilla())
 
     assert agente.llamadas[0]["confirmado"] is None
     assert texto == acuse_de_archivos(1, _pedido(memoria), config)
@@ -155,7 +160,7 @@ def test_la_confirmacion_gana_sobre_el_error_de_otro_mensaje_del_lote(
     planilla = _Planilla()
     lote = [_archivo(_adjunto("audio", "ogg")), _mensaje("sí")]
 
-    texto = procesar_lote(CONV, lote, config, memoria, _Agente(_confirmar(True)), planilla)
+    texto = _lote(CONV, lote, config, memoria, _Agente(_confirmar(True)), planilla)
 
     assert texto == MENSAJE_PEDIDO_CONFIRMADO
     assert len(planilla.filas) == 1
@@ -237,30 +242,38 @@ def test_el_confirmado_reenviado_con_un_campo_descartado_no_abre_otro_pedido(
 
 
 def test_un_rechazo_sobre_el_confirmado_es_un_cambio(memoria: Memoria, config: ConfigNegocio) -> None:
-    """R6: un rechazo después de confirmar no toca el pedido: contesta que el cambio lo ve un asesor."""
+    """R6, R47: un rechazo después de confirmar no toca el pedido: deriva con la frase de horario (R38) y la
+    nota con el confirmado como lo entendió el bot."""
     confirmado = _confirmado(memoria, config)
 
-    texto = _turno(memoria, config, _confirmar(False), "no, esperá")
+    resultado = procesar_lote(CONV, [_mensaje("no, esperá")], config, memoria, _Agente(_confirmar(False)))
 
-    assert texto == MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION
+    assert resultado == Resultado(
+        con_frase_de_horario(MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION, config, HORA_DE_PRUEBA),
+        nota_de_derivacion(CAMBIO, confirmado, NOMBRE, config), derivar=True,
+    )
     charla = _charla(memoria)
     assert charla.pedido is None
     assert charla.toma is not None and charla.toma.pedido == confirmado
-    assert _historial(memoria)[-1] == "[cambio_sobre_pedido_confirmado]"
+    assert _historial(memoria)[-1] == f"[{CAMBIO}]"
 
 
 def test_el_acuse_del_archivo_no_tapa_un_cambio_sobre_el_confirmado(
     memoria: Memoria, config: ConfigNegocio
 ) -> None:
     """R6, R30, R32: una foto con "no, esperá" sobre el confirmado: el cliente recibe el aviso del cambio, no
-    el acuse del archivo, y en el historial queda el marcador del cambio."""
-    _confirmado(memoria, config)
-    lote = [_mensaje("no, esperá", adjuntos=[_adjunto("image", "jpg")])]
+    el acuse del archivo; la nota suma el archivo a la de la derivación (R47)."""
+    confirmado = _confirmado(memoria, config)
+    adjunto = _adjunto("image", "jpg")
 
-    texto = procesar_lote(CONV, lote, config, memoria, _Agente(_confirmar(False)), _Planilla())
+    lote = [_mensaje("no, esperá", adjuntos=[adjunto])]
+    resultado = procesar_lote(CONV, lote, config, memoria, _Agente(_confirmar(False)), _Planilla())
 
-    assert texto == MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION
-    assert _historial(memoria) == ["no, esperá", "[cambio_sobre_pedido_confirmado]"]
+    derivacion = nota_de_derivacion(CAMBIO, confirmado, NOMBRE, config)
+    archivo = nota_de_archivos(f"1. 06/10 10:00 · jpg · adjunto #{adjunto.id}")
+    aviso = con_frase_de_horario(MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION, config, HORA_DE_PRUEBA)
+    assert resultado == Resultado(aviso, f"{derivacion}\n\n{archivo}", derivar=True)
+    assert _historial(memoria) == ["no, esperá", f"[{CAMBIO}]"]
 
 
 def test_el_pedido_recien_confirmado_va_al_prompt(memoria: Memoria, config: ConfigNegocio) -> None:
@@ -268,7 +281,7 @@ def test_el_pedido_recien_confirmado_va_al_prompt(memoria: Memoria, config: Conf
     confirmado = _confirmado(memoria, config)
     agente = _Agente(HORARIOS)
 
-    procesar_lote(CONV, [_mensaje("¿a qué hora abren?")], config, memoria, agente, _Planilla())
+    _lote(CONV, [_mensaje("¿a qué hora abren?")], config, memoria, agente, _Planilla())
 
     assert agente.llamadas[0]["confirmado"] == confirmado
     assert agente.llamadas[0]["pedido"] is None
@@ -280,8 +293,8 @@ def test_otro_trabajo_despues_de_confirmar_es_un_pedido_nuevo(memoria: Memoria, 
     _confirmado(memoria, config)
     agente = _Agente(_registrar(producto="acabados", cantidad=200), HORARIOS)
 
-    texto = procesar_lote(CONV, [_mensaje("también 200 anillados")], config, memoria, agente, _Planilla())
-    procesar_lote(CONV, [_mensaje("¿a qué hora abren?")], config, memoria, agente, _Planilla())
+    texto = _lote(CONV, [_mensaje("también 200 anillados")], config, memoria, agente, _Planilla())
+    _lote(CONV, [_mensaje("¿a qué hora abren?")], config, memoria, agente, _Planilla())
 
     assert texto == pregunta_por_dato("material", config)
     assert _pedido(memoria) == Pedido(telefono=TELEFONO, producto="acabados", cantidad=200)

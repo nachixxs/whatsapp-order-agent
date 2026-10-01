@@ -55,6 +55,17 @@ def test_el_alta_se_lee_de_vuelta() -> None:
     assert leer_registro(atributos) == Registro(AHORA, True, "Ana Prueba")
 
 
+def test_lo_que_la_charla_escribio_le_gana_al_payload() -> None:
+    """R42, R45: un payload armado antes del alta no hace que el contacto vuelva a ser nuevo."""
+    escritos = atributos_del_alta(AHORA, preguntado=True) | atributos_del_nombre("Ana Prueba")
+
+    assert leer_registro({}, escritos) == Registro(AHORA, True, "Ana Prueba")
+    assert leer_registro({"nombre_cliente": "Viejo"}, {"nombre_cliente": "Ana Prueba"}) == Registro(
+        None, False, "Ana Prueba"
+    )
+    assert leer_registro(None, escritos) is None  # R41: sin payload sigue siendo sin dato
+
+
 @pytest.mark.parametrize("fecha", ["ayer", "2026-13-01T10:00:00-03:00", "", 1759755600, None])
 def test_fecha_ilegible_cuenta_como_ausente(fecha: object) -> None:
     """R45: una fecha que no se puede leer cuenta como ausente: el contacto es nuevo."""
@@ -165,6 +176,13 @@ def test_nuevo_sin_perfil_el_nombre_dicho_cuenta() -> None:
 def test_nuevo_con_la_repregunta_no_se_agrega_otra() -> None:
     """R42: la repregunta del nombre cuenta como la pregunta: el alta la marca y no se suma otra."""
     assert _plan(NUEVO, repregunta_del_nombre=True) == Plan(atributos_del_alta(AHORA, preguntado=True), False)
+
+
+def test_nuevo_que_confirma_se_registra_con_el_nombre_del_pedido() -> None:
+    """R45: el contacto nuevo que confirma en este lote queda con el nombre del pedido, sin la pregunta."""
+    assert _plan(NUEVO, nombre_confirmado=PERFIL) == Plan(
+        atributos_del_alta(AHORA, preguntado=False, nombre=PERFIL), False
+    )
 
 
 # el plan: contacto conocido
