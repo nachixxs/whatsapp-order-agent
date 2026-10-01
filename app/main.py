@@ -13,7 +13,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, Request
-import httpx
 from fastapi.responses import JSONResponse
 
 from app.chatwoot import ClienteChatwoot, MensajeEntrante, parsear_evento
@@ -171,13 +170,13 @@ def _procesar_turno(
         logger.warning("Webhook Chatwoot: sin id de conversacion, no se responde")
         return
     resultado = procesar_lote(id_conversacion, lote, config, memoria)
-    if resultado.texto is None:
-        return
-    try:
-        cliente.responder(id_conversacion, resultado.texto)
-    except (httpx.HTTPError, OSError) as error:
-        # R52: solo el tipo del error, nunca su mensaje (puede traer la URL con el id de conversacion)
-        logger.error("Webhook Chatwoot: fallo al responder alias=%s error=%s", alias_conversacion(id_conversacion), type(error).__name__)
+    # R47: respuesta, nota y open en ese orden; un paso que falla no frena a los siguientes
+    pasos = (("responder", resultado.texto, cliente.responder), ("nota_interna", resultado.nota, cliente.nota_interna))
+    fallos = [paso for paso, texto, enviar in pasos if texto is not None and not enviar(id_conversacion, texto)]
+    if resultado.derivar and not cliente.pasar_a_persona(id_conversacion):
+        fallos.append("pasar_a_persona")
+    for paso in fallos:
+        logger.error("Webhook Chatwoot: fallo en el paso %s alias=%s", paso, alias_conversacion(id_conversacion))  # R52
 
 
 def _capturar_payload(cuerpo: bytes) -> None:
