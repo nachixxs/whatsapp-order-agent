@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 logger = logging.getLogger(__name__)
 
 TIMEOUT_SEGUNDOS = 10.0
+TIMEOUT_CONTACTO_SEGUNDOS = 5.0  # R45
 
 
 class Contacto(BaseModel):
@@ -19,6 +20,8 @@ class Contacto(BaseModel):
 
     nombre: str | None = None
     telefono: str | None = None
+    id: int | None = None
+    atributos: dict[str, Any] | None = None  # custom_attributes (R45); None = sin dato. Nunca al log (R52)
 
 
 class Adjunto(BaseModel):
@@ -113,6 +116,8 @@ def _armar_mensaje(crudo: dict[str, Any]) -> MensajeEntrante:
         contacto=Contacto(
             nombre=_texto(sender.get("name")) or None,
             telefono=_texto(sender.get("phone_number")) or None,
+            id=_entero(sender.get("id")),
+            atributos=sender.get("custom_attributes") if isinstance(sender.get("custom_attributes"), dict) else None,
         ),
     )
 
@@ -145,18 +150,19 @@ class ClienteChatwoot:
     def __init__(self, cliente_http: httpx.Client | None = None) -> None:
         self._cliente_http = cliente_http
 
-    def _post(self, id_conversacion: int, ruta: str, cuerpo: dict[str, Any], accion: str) -> bool:
+    def _pedir(self, metodo: str, ruta: str, cuerpo: dict[str, Any], token_env: str, timeout: float, accion: str) -> bool:
+        """`ruta` cuelga de la cuenta. True solo con 2xx; nunca lanza (R53)."""
         base_url = os.environ.get("CHATWOOT_URL", "")
         account_id = os.environ.get("CHATWOOT_ACCOUNT_ID", "")
-        token = os.environ.get("CHATWOOT_BOT_TOKEN", "")
+        token = os.environ.get(token_env, "")
         if not (base_url and account_id and token):
             logger.error("Chatwoot: faltan credenciales, no se pudo %s", accion)
             return False
-        url = f"{base_url}/api/v1/accounts/{account_id}/conversations/{id_conversacion}/{ruta}"
+        url = f"{base_url}/api/v1/accounts/{account_id}/{ruta}"
         propio = self._cliente_http is None
-        cliente = self._cliente_http or httpx.Client(timeout=TIMEOUT_SEGUNDOS)
+        cliente = self._cliente_http or httpx.Client()
         try:
-            cliente.post(url, json=cuerpo, headers={"api_access_token": token}).raise_for_status()
+            cliente.request(metodo, url, json=cuerpo, headers={"api_access_token": token}, timeout=timeout).raise_for_status()
             return True
         except Exception:  # R53: un fallo de red no expone el token ni tumba el turno; nunca el texto ni el error
             logger.error("Chatwoot: fallo al %s", accion)
@@ -164,6 +170,18 @@ class ClienteChatwoot:
         finally:
             if propio:
                 cliente.close()
+
+    def _post(self, id_conversacion: int, ruta: str, cuerpo: dict[str, Any], accion: str) -> bool:
+        ruta_completa = f"conversations/{id_conversacion}/{ruta}"
+        return self._pedir("POST", ruta_completa, cuerpo, "CHATWOOT_BOT_TOKEN", TIMEOUT_SEGUNDOS, accion)
+
+    def actualizar_contacto(self, id_contacto: int, atributos: dict[str, Any]) -> bool:
+        """R45: escribe custom_attributes del contacto (Chatwoot los mezcla). Token de agente: el del bot no puede.
+
+        Tope de 5 s y sin reintento: si falla, el turno sigue (R41).
+        """
+        cuerpo = {"custom_attributes": atributos}
+        return self._pedir("PUT", f"contacts/{id_contacto}", cuerpo, "CHATWOOT_AGENTE_TOKEN", TIMEOUT_CONTACTO_SEGUNDOS, "actualizar el contacto")
 
     def responder(self, id_conversacion: int, texto: str) -> bool:
         return self._post(id_conversacion, "messages", {"content": texto, "message_type": "outgoing"}, "enviar la respuesta")
