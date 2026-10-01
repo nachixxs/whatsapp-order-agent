@@ -14,9 +14,14 @@ from app.chatwoot import ClienteChatwoot
 from app.config import ConfigNegocio
 from app.main import app, get_cliente_chatwoot, get_config, get_memoria, workers_pedidos
 from app.memoria import Memoria
-from tests.conftest import _payload
+from tests.conftest import _payload as _payload_base
 
 SECRETO = "secreto-de-prueba"
+
+
+def _payload(**cambios: object) -> dict[str, object]:
+    """R47: el bot solo atiende conversaciones `pending`; el payload base de conftest viene `open`."""
+    return _payload_base(**{"conversation": {"id": 555, "status": "pending"}, **cambios})
 
 
 class ClienteFalso(ClienteChatwoot):
@@ -271,7 +276,7 @@ def test_webhook_firma_mala_no_llega_al_turno(
 def _archivo(id_mensaje: int, id_adjunto: int, conversacion: int = 555, content: str | None = None) -> bytes:
     adjunto = {"id": id_adjunto, "file_type": "image", "data_url": "https://chatwoot.local/rails/secreto-firmado"}
     payload = _payload(
-        id=id_mensaje, content=content, attachments=[adjunto], conversation={"id": conversacion, "status": "open"}
+        id=id_mensaje, content=content, attachments=[adjunto], conversation={"id": conversacion, "status": "pending"}
     )
     return json.dumps(payload).encode()
 
@@ -348,7 +353,7 @@ def test_r30_las_ventanas_son_por_conversacion(
     """R30: un texto de otra conversacion no cae en la ventana abierta de la primera."""
     _configurar_entorno(monkeypatch)
     _post(client, config, _archivo(1, 1, conversacion=555))
-    otro = _payload(id=9, conversation={"id": 777, "status": "open"})
+    otro = _payload(id=9, conversation={"id": 777, "status": "pending"})
     _post(client, config, json.dumps(otro).encode())
     assert [c for c, *_ in turno_falso.llamados] == [777]
 
@@ -688,3 +693,37 @@ def test_webhook_secreto_vacio_nunca_coincide(
         else:
             monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", valor)
         _sin_eco(_post(client, config, cuerpo, secreto=""), cliente_falso)
+
+
+@pytest.mark.parametrize("estado", ["open", "snoozed", "resolved", None])
+def test_r47_conversacion_no_pendiente_no_llega_al_turno_ni_a_los_archivos(
+    client: TestClient,
+    config: ConfigNegocio,
+    cliente_falso: ClienteFalso,
+    turno_falso: TurnoFalso,
+    timer_falso: type[TimerFalso],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    estado: str | None,
+) -> None:
+    """R47, R50: fuera de `pending` se descarta con 200: ni turno, ni respuesta, ni ventana de archivos."""
+    _configurar_entorno(monkeypatch)
+    conversacion = {"id": 555} if estado is None else {"id": 555, "status": estado}
+    adjunto = {"id": 7, "file_type": "image", "extension": "png", "file_size": 10}
+    with caplog.at_level("INFO"):
+        for cambios in ({}, {"attachments": [adjunto]}):
+            respuesta = _post(client, config, json.dumps(_payload(conversation=conversacion, **cambios)).encode())
+            assert respuesta.status_code == 200
+    assert turno_falso.llamados == []
+    assert cliente_falso.respuestas == []
+    assert timer_falso.creados == []
+    assert "no pendiente" in caplog.text
+
+
+def test_r47_conversacion_pending_si_llega_al_turno(
+    client: TestClient, config: ConfigNegocio, cliente_falso: ClienteFalso, turno_falso: TurnoFalso, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R47: `pending` es el unico estado que atiende el bot."""
+    _configurar_entorno(monkeypatch)
+    _post(client, config, json.dumps(_payload()).encode())
+    assert len(turno_falso.llamados) == 1

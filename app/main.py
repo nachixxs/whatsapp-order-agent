@@ -236,6 +236,10 @@ async def webhook_chatwoot(
     if not _cuenta_valida(mensaje):
         logger.warning("Webhook Chatwoot: account o inbox inesperado")
         return {"estado": "ignorado"}
+    if mensaje.estado_conversacion != "pending":
+        # R47: con `open`, `snoozed`, `resolved` o sin estado la conversacion no es del bot
+        logger.info("Webhook Chatwoot: conversacion no pendiente estado=%s alias=%s", para_log(mensaje.estado_conversacion), alias_conversacion(mensaje.id_conversacion))
+        return {"estado": "ignorado"}
     alias = alias_conversacion(mensaje.id_conversacion)
     logger.info("Webhook Chatwoot: mensaje aceptado alias=%s evento=%s adjuntos=%d", alias, para_log(mensaje.evento), len(mensaje.adjuntos))
     _capturar_payload(cuerpo)

@@ -110,3 +110,61 @@ def test_creado_en_utc_y_none_si_falta_o_es_invalido() -> None:
         mensaje = parsear_evento(json.dumps(_payload(created_at=valor)).encode())
         assert mensaje is not None
         assert mensaje.creado is None
+
+
+def _cliente(monkeypatch: pytest.MonkeyPatch, estado: int = 200, error: bool = False) -> tuple[ClienteChatwoot, list[httpx.Request]]:
+    monkeypatch.setenv("CHATWOOT_URL", "http://chatwoot.local")
+    monkeypatch.setenv("CHATWOOT_ACCOUNT_ID", "1")
+    monkeypatch.setenv("CHATWOOT_BOT_TOKEN", "secreto-de-prueba")
+    llamadas: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        llamadas.append(request)
+        if error:
+            raise httpx.ReadTimeout("timeout", request=request)
+        return httpx.Response(estado, json={})
+
+    return ClienteChatwoot(cliente_http=httpx.Client(transport=httpx.MockTransport(_handler))), llamadas
+
+
+def test_nota_interna_es_un_mensaje_privado(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R47: el aviso al asesor es un mensaje con private=true y message_type outgoing."""
+    cliente, llamadas = _cliente(monkeypatch)
+    assert cliente.nota_interna(555, "Nota de prueba") is True
+    assert llamadas[0].url.path == "/api/v1/accounts/1/conversations/555/messages"
+    assert json.loads(llamadas[0].content) == {"content": "Nota de prueba", "message_type": "outgoing", "private": True}
+
+
+def test_pasar_a_persona_pone_la_conversacion_en_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R47: derivar es toggle_status con status open."""
+    cliente, llamadas = _cliente(monkeypatch)
+    assert cliente.pasar_a_persona(555) is True
+    assert llamadas[0].url.path == "/api/v1/accounts/1/conversations/555/toggle_status"
+    assert json.loads(llamadas[0].content) == {"status": "open"}
+    assert llamadas[0].headers["api_access_token"] == "secreto-de-prueba"
+
+
+@pytest.mark.parametrize("estado, error", [(400, False), (404, False), (500, False), (200, True)])
+@pytest.mark.parametrize("accion", ["responder", "nota_interna", "pasar_a_persona"])
+def test_fallo_de_chatwoot_da_false_sin_lanzar_ni_loguear_secretos(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, accion: str, estado: int, error: bool
+) -> None:
+    """R52, R53: 4xx, 5xx o timeout devuelven False; ni el token ni el texto llegan al log."""
+    cliente, _ = _cliente(monkeypatch, estado, error)
+    llamar = getattr(cliente, accion)
+    with caplog.at_level("INFO"):
+        resultado = llamar(555) if accion == "pasar_a_persona" else llamar(555, "texto-del-cliente")
+    assert resultado is False
+    assert "secreto-de-prueba" not in caplog.text
+    assert "texto-del-cliente" not in caplog.text
+
+
+@pytest.mark.parametrize("faltante", ["CHATWOOT_URL", "CHATWOOT_ACCOUNT_ID", "CHATWOOT_BOT_TOKEN"])
+def test_falta_una_credencial_da_false_sin_llamar_a_la_red(monkeypatch: pytest.MonkeyPatch, faltante: str) -> None:
+    """R53: sin una de las tres credenciales no se hace ningun pedido."""
+    cliente, llamadas = _cliente(monkeypatch)
+    monkeypatch.delenv(faltante)
+    assert cliente.nota_interna(555, "x") is False
+    assert cliente.pasar_a_persona(555) is False
+    assert cliente.responder(555, "x") is False
+    assert llamadas == []
