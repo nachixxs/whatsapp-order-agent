@@ -37,7 +37,7 @@ def _payload(**cambios: object) -> dict[str, object]:
         "id": 101,
         "content": "hola, quiero tarjetas",
         "attachments": [],
-        "conversation": {"id": 555, "status": "open"},
+        "conversation": {"id": 555, "status": "pending"},
         "account": {"id": 1},
         "inbox": {"id": 2},
         "sender": {"name": "Cliente Prueba", "phone_number": TELEFONO},

@@ -14,7 +14,10 @@ from app.chatwoot import ClienteChatwoot
 from app.config import ConfigNegocio
 from app.main import app, get_cliente_chatwoot, get_config, get_memoria, workers_pedidos
 from app.memoria import Memoria
-from tests.conftest import _payload
+from app.pedidos import Pedido
+from app.turno import Resultado
+from tests.conftest import TELEFONO, _payload
+from tests.test_turno import COMPLETO
 
 SECRETO = "secreto-de-prueba"
 
@@ -23,9 +26,23 @@ class ClienteFalso(ClienteChatwoot):
     def __init__(self) -> None:
         super().__init__()
         self.respuestas: list[tuple[int, str]] = []
+        self.llamadas: list[str] = []  # orden de los pasos: "responder", "nota_interna", "pasar_a_persona"
+        self.notas: list[str] = []
+        self.fallan: set[str] = set()  # pasos que devuelven False, como el cliente real cuando Chatwoot falla
 
-    def responder(self, id_conversacion: int, texto: str) -> None:
+    def responder(self, id_conversacion: int, texto: str) -> bool:
+        self.llamadas.append("responder")
         self.respuestas.append((id_conversacion, texto))
+        return "responder" not in self.fallan
+
+    def nota_interna(self, id_conversacion: int, texto: str) -> bool:
+        self.llamadas.append("nota_interna")
+        self.notas.append(texto)
+        return "nota_interna" not in self.fallan
+
+    def pasar_a_persona(self, id_conversacion: int) -> bool:
+        self.llamadas.append("pasar_a_persona")
+        return "pasar_a_persona" not in self.fallan
 
 
 def _configurar_entorno(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -33,6 +50,7 @@ def _configurar_entorno(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CHATWOOT_ACCOUNT_ID", "1")
     monkeypatch.setenv("CHATWOOT_INBOX_ID", "2")
     monkeypatch.setenv("CHATWOOT_BOT_TOKEN", "token-de-prueba")
+    monkeypatch.setenv("CHATWOOT_AGENTE_TOKEN", "token-de-agente-de-prueba")
     monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", SECRETO)
 
 
@@ -45,15 +63,17 @@ def cliente_falso() -> ClienteFalso:
 
 
 class TurnoFalso:
-    """Reemplaza a procesar_lote: anota los llamados y devuelve `texto` (sin API ni SQLite)."""
+    """Reemplaza a procesar_lote: anota los llamados y devuelve un Resultado con `texto` (sin API ni SQLite)."""
 
     def __init__(self) -> None:
         self.llamados: list[tuple[int, list[object], object, object]] = []
         self.texto: str | None = "respuesta del turno"
+        self.nota: str | None = None
+        self.derivar = False
 
-    def __call__(self, conversacion: int, mensajes: object, config: object, memoria: object) -> str | None:
+    def __call__(self, conversacion: int, mensajes: object, config: object, memoria: object) -> Resultado:
         self.llamados.append((conversacion, list(mensajes), config, memoria))  # type: ignore[call-overload]
-        return self.texto
+        return Resultado(self.texto, self.nota, self.derivar)
 
 
 @pytest.fixture
@@ -174,7 +194,7 @@ def test_webhook_inbox_equivocado_se_descarta(
     [
         {"message_type": "outgoing"},
         {"private": True},
-        {"event": "conversation_status_changed"},
+        {"event": "message_updated"},
     ],
 )
 def test_webhook_r48_se_descarta_sin_eco(
@@ -271,7 +291,7 @@ def test_webhook_firma_mala_no_llega_al_turno(
 def _archivo(id_mensaje: int, id_adjunto: int, conversacion: int = 555, content: str | None = None) -> bytes:
     adjunto = {"id": id_adjunto, "file_type": "image", "data_url": "https://chatwoot.local/rails/secreto-firmado"}
     payload = _payload(
-        id=id_mensaje, content=content, attachments=[adjunto], conversation={"id": conversacion, "status": "open"}
+        id=id_mensaje, content=content, attachments=[adjunto], conversation={"id": conversacion, "status": "pending"}
     )
     return json.dumps(payload).encode()
 
@@ -348,7 +368,7 @@ def test_r30_las_ventanas_son_por_conversacion(
     """R30: un texto de otra conversacion no cae en la ventana abierta de la primera."""
     _configurar_entorno(monkeypatch)
     _post(client, config, _archivo(1, 1, conversacion=555))
-    otro = _payload(id=9, conversation={"id": 777, "status": "open"})
+    otro = _payload(id=9, conversation={"id": 777, "status": "pending"})
     _post(client, config, json.dumps(otro).encode())
     assert [c for c, *_ in turno_falso.llamados] == [777]
 
@@ -373,31 +393,88 @@ def test_r52_data_url_no_aparece_en_el_log(
     assert "555" not in texto
 
 
-def test_webhook_falla_al_responder_se_loguea_sin_valores_y_da_200(
+def _turno(
     client: TestClient,
     config: ConfigNegocio,
     monkeypatch: pytest.MonkeyPatch,
     turno_falso: TurnoFalso,
+    texto: str | None,
+    nota: str | None,
+    derivar: bool,
+) -> None:
+    _configurar_entorno(monkeypatch)
+    turno_falso.texto, turno_falso.nota, turno_falso.derivar = texto, nota, derivar
+    assert _post(client, config, json.dumps(_payload()).encode()).status_code == 200
+
+
+def test_r47_derivar_responde_deja_la_nota_y_pasa_a_open_en_ese_orden(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+) -> None:
+    """R47: respuesta, nota interna y open, en ese orden."""
+    _turno(client, config, monkeypatch, turno_falso, "texto", "nota", True)
+    assert cliente_falso.llamadas == ["responder", "nota_interna", "pasar_a_persona"]
+    assert cliente_falso.notas == ["nota"]
+
+
+def test_r32_nota_sin_derivar_no_pasa_a_open(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+) -> None:
+    """R32: la nota del archivo despues de confirmar se deja, pero la conversacion sigue con el bot."""
+    _turno(client, config, monkeypatch, turno_falso, "texto", "archivo", False)
+    assert cliente_falso.llamadas == ["responder", "nota_interna"]
+
+
+def test_r47_derivar_sin_nota_pasa_a_open_igual(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+) -> None:
+    """R47: sin nota la conversacion pasa a open igual."""
+    _turno(client, config, monkeypatch, turno_falso, "texto", None, True)
+    assert cliente_falso.llamadas == ["responder", "pasar_a_persona"]
+
+
+def test_r47_falla_la_respuesta_la_nota_y_open_salen_igual(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+) -> None:
+    """R47: la persona tiene que ver la nota y la conversacion pasar a open aunque la respuesta no haya salido."""
+    cliente_falso.fallan = {"responder"}
+    _turno(client, config, monkeypatch, turno_falso, "texto", "nota", True)
+    assert cliente_falso.llamadas == ["responder", "nota_interna", "pasar_a_persona"]
+
+
+def test_r47_falla_la_nota_open_sale_igual(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+) -> None:
+    """R47: una nota que no salio no deja al cliente sin persona."""
+    cliente_falso.fallan = {"nota_interna"}
+    _turno(client, config, monkeypatch, turno_falso, "texto", "nota", True)
+    assert cliente_falso.llamadas == ["responder", "nota_interna", "pasar_a_persona"]
+
+
+def test_r47_texto_none_con_nota_la_nota_sale_igual(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+) -> None:
+    """R32: un archivo que no se acusa igual deja su nota; sin texto no se le escribe al cliente."""
+    _turno(client, config, monkeypatch, turno_falso, None, "archivo", False)
+    assert cliente_falso.llamadas == ["nota_interna"]
+
+
+def test_r52_fallos_se_loguean_con_paso_y_alias_sin_datos_y_el_webhook_da_200(
+    client: TestClient,
+    config: ConfigNegocio,
+    monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso,
+    turno_falso: TurnoFalso,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """R52 y R50: un error de responder no tumba el webhook y el log lleva el tipo, no el mensaje."""
-
-    class ClienteRoto(ClienteChatwoot):
-        def responder(self, id_conversacion: int, texto: str) -> None:
-            raise httpx.ConnectError("http://chatwoot.local/conversations/555 token-secreto")
-
-    app.dependency_overrides[get_cliente_chatwoot] = lambda: ClienteRoto()
-    _configurar_entorno(monkeypatch)
-    try:
-        with caplog.at_level(logging.INFO):
-            respuesta = _post(client, config, json.dumps(_payload()).encode())
-    finally:
-        app.dependency_overrides.pop(get_cliente_chatwoot, None)
-    assert respuesta.status_code == 200
-    texto = "\n".join(r.getMessage() for r in caplog.records if r.name.startswith("app."))
-    assert "ConnectError" in texto
-    assert "token-secreto" not in texto
-    assert "555" not in texto
+    """R52 y R50: cada paso fallido deja un error con su nombre y el alias; nada del cliente ni el id real."""
+    cliente_falso.fallan = {"responder", "nota_interna", "pasar_a_persona"}
+    with caplog.at_level(logging.INFO):
+        _turno(client, config, monkeypatch, turno_falso, "texto del cliente", "nota privada", True)
+    errores = [r.getMessage() for r in caplog.records if r.name.startswith("app.") and r.levelno == logging.ERROR]
+    assert [e.split("paso ")[1].split(" ")[0] for e in errores] == ["responder", "nota_interna", "pasar_a_persona"]
+    assert all("alias=" in e and "555" not in e for e in errores)
+    assert "texto del cliente" not in " ".join(errores)
+    assert "nota privada" not in " ".join(errores)
 
 
 @pytest.mark.parametrize(
@@ -688,3 +765,156 @@ def test_webhook_secreto_vacio_nunca_coincide(
         else:
             monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", valor)
         _sin_eco(_post(client, config, cuerpo, secreto=""), cliente_falso)
+
+
+@pytest.mark.parametrize("estado", ["open", "snoozed", "resolved", None])
+def test_r47_conversacion_no_pendiente_no_llega_al_turno_ni_a_los_archivos(
+    client: TestClient,
+    config: ConfigNegocio,
+    cliente_falso: ClienteFalso,
+    turno_falso: TurnoFalso,
+    timer_falso: type[TimerFalso],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    estado: str | None,
+) -> None:
+    """R47, R50: fuera de `pending` se descarta con 200: ni turno, ni respuesta, ni ventana de archivos."""
+    _configurar_entorno(monkeypatch)
+    conversacion = {"id": 555} if estado is None else {"id": 555, "status": estado}
+    adjunto = {"id": 7, "file_type": "image", "extension": "png", "file_size": 10}
+    with caplog.at_level("INFO"):
+        for cambios in ({}, {"attachments": [adjunto]}):
+            respuesta = _post(client, config, json.dumps(_payload(conversation=conversacion, **cambios)).encode())
+            assert respuesta.status_code == 200
+    assert turno_falso.llamados == []
+    assert cliente_falso.respuestas == []
+    assert timer_falso.creados == []
+    assert "no pendiente" in caplog.text
+
+
+def test_salud_degradado_sin_el_token_de_agente(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R55: sin CHATWOOT_AGENTE_TOKEN el bot arranca pero R45 (el nombre en el contacto) quedaria apagado sin aviso."""
+    _configurar_entorno(monkeypatch)
+    monkeypatch.delenv("CHATWOOT_AGENTE_TOKEN")
+    respuesta = client.get("/salud")
+    assert (respuesta.status_code, respuesta.json()) == (503, {"estado": "degradado"})
+
+
+def _evento_conversacion(evento: str = "conversation_status_changed", estado: str = "open", **cambios: object) -> dict[str, object]:
+    """Forma de Chatwoot v4.18.0 (`conversation.webhook_data`): la conversacion en la raiz, sin `inbox`."""
+    base: dict[str, object] = {
+        "event": evento, "id": 555, "status": estado, "inbox_id": 2, "account": {"id": 1, "name": "Cuenta"},
+        "messages": [], "changed_attributes": [{"status": {"previous_value": "pending", "current_value": estado}}],
+    }
+    return base | cambios
+
+
+@pytest.fixture
+def soltados(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Reemplaza a soltar_pedido_completo: anota la conversacion de cada llamado."""
+    llamados: list[int] = []
+    monkeypatch.setattr("app.main.soltar_pedido_completo", lambda conversacion, config, memoria: llamados.append(conversacion))
+    return llamados
+
+
+@pytest.mark.parametrize("estado", ["open", "snoozed", "resolved"])
+@pytest.mark.parametrize("evento", ["conversation_status_changed", "conversation_opened", "conversation_updated"])
+def test_r47_evento_de_conversacion_fuera_de_pending_suelta_el_pedido(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int],
+    cliente_falso: ClienteFalso, turno_falso: TurnoFalso, evento: str, estado: str,
+) -> None:
+    """R47: cualquier evento de conversacion firmado, fuera de `pending`, suelta el pedido completo; el bot no contesta."""
+    _configurar_entorno(monkeypatch)
+    respuesta = _post(client, config, json.dumps(_evento_conversacion(evento, estado)).encode())
+    assert (respuesta.status_code, respuesta.json()) == (200, {"estado": "ignorado"})
+    assert soltados == [555]
+    assert turno_falso.llamados == [] and cliente_falso.respuestas == []
+
+
+@pytest.mark.parametrize("estado", ["open", "snoozed", "resolved"])
+@pytest.mark.parametrize("cambios", [{"message_type": "outgoing"}, {"message_type": "incoming"}, {"private": True}])
+def test_r47_mensaje_de_cualquier_tipo_fuera_de_pending_suelta_el_pedido(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int],
+    turno_falso: TurnoFalso, estado: str, cambios: dict[str, object],
+) -> None:
+    """R47: un mensaje del cliente, de la persona o una nota, con la conversacion fuera de `pending`, suelta el pedido."""
+    _configurar_entorno(monkeypatch)
+    payload = _payload(conversation={"id": 555, "status": estado}, **cambios)
+    assert _post(client, config, json.dumps(payload).encode()).json() == {"estado": "ignorado"}
+    assert soltados == [555]
+    assert turno_falso.llamados == []
+
+
+def test_r47_en_pending_ningun_evento_suelta_el_pedido(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int], turno_falso: TurnoFalso
+) -> None:
+    """R47: en `pending` la conversacion es del bot: ni un evento de conversacion ni su propio mensaje sueltan nada."""
+    _configurar_entorno(monkeypatch)
+    cuerpos = (_evento_conversacion("conversation_updated", "pending"), _payload(message_type="outgoing"), _payload())
+    for cuerpo in cuerpos:
+        assert _post(client, config, json.dumps(cuerpo).encode()).status_code == 200
+    assert soltados == []
+    assert len(turno_falso.llamados) == 1  # solo el entrante
+
+
+@pytest.mark.parametrize(
+    "cuerpo",
+    [
+        pytest.param(_evento_conversacion(account={"id": 999}), id="cuenta_conversacion"),
+        pytest.param(_evento_conversacion(inbox_id=999), id="inbox_conversacion"),
+        pytest.param(_payload(conversation={"id": 555, "status": "open"}, account={"id": 999}), id="cuenta_mensaje"),
+        pytest.param(_payload(conversation={"id": 555, "status": "open"}, inbox={"id": 999}), id="inbox_mensaje"),
+        pytest.param(_evento_conversacion(id=None), id="sin_id"),
+        pytest.param(_evento_conversacion(id="no es un numero"), id="id_roto"),
+        pytest.param({"event": "contact_updated", "id": 9, "account": {"id": 1}}, id="otro_evento"),
+    ],
+)
+def test_r47_evento_ajeno_o_roto_no_suelta_nada(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int], cuerpo: dict[str, object]
+) -> None:
+    """R47, R49, R51: otra cuenta u otro inbox, sin id o de otro tipo de evento, no toca el pedido de nadie."""
+    _configurar_entorno(monkeypatch)
+    assert _post(client, config, json.dumps(cuerpo).encode()).json() == {"estado": "ignorado"}
+    assert soltados == []
+
+
+def test_r47_firma_mala_o_vieja_no_suelta_nada(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int]
+) -> None:
+    """R49: sin firma valida, un evento de conversacion no puede borrarle el pedido a nadie."""
+    _configurar_entorno(monkeypatch)
+    cuerpo = json.dumps(_evento_conversacion()).encode()
+    _post(client, config, cuerpo, secreto="otro-secreto")
+    _post(client, config, cuerpo, desfase=3_600)
+    client.post("/webhook/chatwoot", content=cuerpo)
+    assert soltados == []
+
+
+def test_r47_el_evento_suelta_el_pedido_completo_de_verdad(
+    client: TestClient, config: ConfigNegocio, memoria: Memoria, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R47: con la funcion real, un evento en `open` deja la charla sin el pedido completo (un "si" ya no confirma)."""
+    _configurar_entorno(monkeypatch)
+    charla = memoria.leer_charla(555, config.ahora())
+    memoria.guardar_pedido(555, Pedido(telefono=TELEFONO, **COMPLETO), charla.generacion, config.ahora())
+    assert memoria.leer_charla(555, config.ahora()).pedido is not None
+    _post(client, config, json.dumps(_evento_conversacion()).encode())
+    assert memoria.leer_charla(555, config.ahora()).pedido is None
+
+
+def test_r47_evento_fuera_de_pending_descarta_la_ventana_de_archivos(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int],
+    turno_falso: TurnoFalso, timer_falso: type[TimerFalso],
+) -> None:
+    """R47, R30: con la ventana abierta, un evento fuera de `pending` la cierra, cancela el timer y no procesa lo acumulado."""
+    _configurar_entorno(monkeypatch)
+    _post(client, config, _archivo(1, 1))
+    _post(client, config, _archivo(2, 2, conversacion=777))  # otra conversacion: su ventana sigue
+    assert set(app_main._ventanas) == {555, 777}
+    _post(client, config, json.dumps(_evento_conversacion()).encode())
+    assert set(app_main._ventanas) == {777}
+    assert timer_falso.creados[0].cancelado and not timer_falso.creados[1].cancelado
+    timer_falso.creados[0].disparar()  # un timer que ya estaba en vuelo no encuentra nada que procesar
+    assert turno_falso.llamados == [] and soltados == [555]

@@ -1,12 +1,13 @@
 import inspect
 import re
-from datetime import date, time
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from app import respuestas
 from app.config import ConfigNegocio, Franja, Horario
-from app.pedidos import Pedido
+from app.pedidos import ArchivoAdjunto, Pedido, texto_de_archivos
 from app.respuestas import (
     AVISO_MATERIAL_A_DEFINIR,
     MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION,
@@ -20,7 +21,11 @@ from app.respuestas import (
     acuse_de_archivos_despues_de_confirmar,
     aviso_de_descartados,
     con_aviso_de_material,
+    con_frase_de_horario,
+    con_pregunta_del_nombre,
     fecha_en_palabras,
+    nota_de_archivos,
+    nota_de_derivacion,
     pregunta_por_dato,
     respuesta_faq,
     resumen_pedido,
@@ -33,16 +38,20 @@ from app.tools import (
     MOTIVOS_DERIVACION,
     TEMAS_CONSULTA,
 )
-from tests.conftest import TELEFONO
+from tests.conftest import HORA_DE_PRUEBA, TELEFONO
 
 # Lo que delataría un precio, un plazo de entrega, una seña o una promesa de inmediatez.
 # "precio" y "plazo" no están: aparecen para decir que los da el asesor (ver el test de abajo).
 # "hábiles" tampoco: el plazo del presupuesto es un dato de la config (R19 lo permite en el FAQ).
-# Con \b: "diseñamos" contiene "seña"
+# Con \b: "diseñamos" contiene "seña". "ya" suelto tampoco: "ya lo tenés" o "Ya le paso tu consulta"
+# no prometen nada; lo prohibido es que una persona contesta ya (R38)
+_CONTACTO = r"(contest|contact|atiend|llam|escrib|respond)"
 PROHIBIDAS = (
     r"\$", r"\bseñas?\b", r"\banticipo", r"\bdemora", r"\bdías hábiles\b", r"\bentreg", r"\bcuesta\b",
-    r"\ben breve\b", r"\benseguida\b", r"¡listo",
+    r"\ben breve\b", r"\benseguida\b", r"¡listo", rf"\bya te {_CONTACTO}", rf"\b{_CONTACTO}\w* ya\b",
 )
+ZONA = ZoneInfo("America/Argentina/Buenos_Aires")
+MOTIVOS_DE_LA_NOTA = (*MOTIVOS_DERIVACION, "cambio_sobre_pedido_confirmado")  # R6
 
 
 def _pedido(**cambios: object) -> Pedido:
@@ -63,10 +72,29 @@ def _con(config: ConfigNegocio, **cambios: object) -> ConfigNegocio:
     return ConfigNegocio.model_validate(config.model_dump() | cambios)
 
 
+def _sin_aperturas(config: ConfigNegocio) -> ConfigNegocio:
+    """Feriados que tapan hoy y los 31 días que siguen a HORA_DE_PRUEBA: proxima_apertura da None."""
+    return _con(config, feriados=[HORA_DE_PRUEBA.date() + timedelta(days=dia) for dia in range(32)])
+
+
+def _con_horario(config: ConfigNegocio) -> list[str]:
+    """La frase de horario detrás de cada texto que deriva: en horario, cerrado y sin apertura a la vista."""
+    cerrado = HORA_DE_PRUEBA.replace(hour=20)
+    textos = [*(texto_derivacion(motivo, config) for motivo in MOTIVOS_DERIVACION),
+              MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION]
+    return [
+        con_frase_de_horario(texto, c, ahora)
+        for texto in textos
+        for c, ahora in ((config, HORA_DE_PRUEBA), (config, cerrado), (_sin_aperturas(config), cerrado))
+    ]
+
+
 def _todos_los_textos(config: ConfigNegocio) -> list[str]:
     """Todos menos MENSAJE_PEDIDO_CONFIRMADO, que tiene su propio test contra PROHIBIDAS."""
     variantes = [config, _con(config, hace_envios=True, tiene_estacionamiento=True)]
     return [
+        *_con_horario(config),
+        con_pregunta_del_nombre(respuesta_faq("direccion", config)),
         MENSAJE_NO_ENTENDIDO, MENSAJE_ERROR_INTERNO, MENSAJE_PEDIDO_RECHAZADO, AVISO_MATERIAL_A_DEFINIR,
         MENSAJE_ERROR_AL_GUARDAR, MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION, MENSAJE_TIPO_NO_SOPORTADO,
         *(acuse_de_archivos(n, p, config) for n in (1, 3) for p in (_pedido(), _pedido(medidas=None))),
@@ -449,6 +477,223 @@ def test_tipo_no_soportado_tiene_respuesta_fija() -> None:
     )
 
 
+# Frase de horario
+
+
+_REABRE = " Ya le dejo tu consulta, y te va a contestar cuando volvamos a abrir"
+
+
+def test_en_horario_le_contesta_un_asesor_por_aca(config: ConfigNegocio) -> None:
+    """R38: en horario, detrás del texto va que un asesor le contesta por acá; sin "en breve"."""
+    config.fijar_ahora(HORA_DE_PRUEBA)
+    assert con_frase_de_horario(MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION, config, config.ahora()) == (
+        "Ese pedido ya lo estaba confirmando, así que un cambio lo tiene que ver un asesor con vos. "
+        "Ya le paso tu consulta así te contesta por acá."
+    )
+
+
+@pytest.mark.parametrize(
+    ("ahora", "cuando"),
+    [
+        (datetime(2026, 10, 6, 7, 30, tzinfo=ZONA), "hoy desde las 09:00"),
+        (datetime(2026, 10, 6, 18, 0, tzinfo=ZONA), "mañana desde las 09:00"),
+        (datetime(2026, 10, 3, 14, 0, tzinfo=ZONA), "el lunes 5 de octubre desde las 09:00"),
+    ],
+    ids=["antes-de-abrir", "al-cerrar", "sabado-a-la-tarde"],
+)
+def test_fuera_de_horario_dice_cuando_reabre(ahora: datetime, cuando: str, config: ConfigNegocio) -> None:
+    """R38: fuera de horario dice cuándo reabre, con la config: hoy, mañana o el día con la fecha."""
+    texto = texto_derivacion("lo_pide_el_cliente", config)
+    assert con_frase_de_horario(texto, config, ahora) == f"{texto}{_REABRE}: {cuando}."
+
+
+@pytest.mark.parametrize(
+    ("ahora", "cuando"),
+    [
+        (datetime(2026, 10, 11, 10, 0, tzinfo=ZONA), "el martes 13 de octubre desde las 09:00"),
+        (datetime(2026, 10, 12, 10, 0, tzinfo=ZONA), "mañana desde las 09:00"),
+    ],
+    ids=["vispera", "el-feriado"],
+)
+def test_la_reapertura_saltea_el_feriado(ahora: datetime, cuando: str, config: ConfigNegocio) -> None:
+    """R38, R39: el lunes 12 de octubre es feriado; la reapertura de la víspera cae el martes."""
+    texto = texto_derivacion("sin_stock", config)
+    assert con_frase_de_horario(texto, config, ahora) == f"{texto}{_REABRE}: {cuando}."
+
+
+def test_hoy_y_manana_son_los_de_la_zona_del_negocio(config: ConfigNegocio) -> None:
+    """R37, R38: el martes 22:00 en el negocio ya es miércoles en UTC; la reapertura es "mañana", no "hoy"."""
+    ahora = datetime(2026, 10, 7, 1, 0, tzinfo=ZoneInfo("UTC"))
+    texto = texto_derivacion("fuera_de_alcance", config)
+    assert con_frase_de_horario(texto, config, ahora) == f"{texto}{_REABRE}: mañana desde las 09:00."
+
+
+def test_sin_apertura_a_la_vista_cierra_sin_fecha(config: ConfigNegocio) -> None:
+    """R38, R39: si proxima_apertura da None, la oración cierra sin fecha y sin dos puntos colgando."""
+    texto = texto_derivacion("plazo_o_precio", config)
+    ahora = HORA_DE_PRUEBA.replace(hour=20)
+    assert con_frase_de_horario(texto, _sin_aperturas(config), ahora) == f"{texto}{_REABRE}."
+
+
+def test_frase_de_horario_sin_zona_lanza(config: ConfigNegocio) -> None:
+    """R37: una hora sin zona se leería como la del servidor."""
+    with pytest.raises(ValueError):
+        con_frase_de_horario("Hola.", config, datetime(2026, 10, 6, 10, 0))
+
+
+# Notas al asesor
+
+
+def test_nota_de_derivacion_con_pedido_y_nombre(config: ConfigNegocio) -> None:
+    """R47: nombre, motivo en palabras y el pedido con las etiquetas del resumen."""
+    assert nota_de_derivacion("lo_pide_el_cliente", _pedido(), "Ana", config) == (
+        "Derivación del bot: Pidió hablar con una persona.\n"
+        "Nombre: Ana\n"
+        "Así entendió el bot el pedido:\n"
+        "- A nombre de: Ana Prueba\n"
+        "- Trabajo: Impresión digital\n"
+        "- Material: cartulina 300g\n"
+        "- Medidas: 9x5 cm\n"
+        "- Cantidad: 100\n"
+        "- Diseño: lo tiene\n"
+        "- Lo necesita para el miércoles 14 de octubre"
+    )
+
+
+@pytest.mark.parametrize("nombre", [None, "", "  \n "])
+def test_nota_sin_nombre_lo_marca(nombre: str | None, config: ConfigNegocio) -> None:
+    """R47: sin nombre registrado, la nota lo dice; nunca un "Nombre: " vacío."""
+    nota = nota_de_derivacion("sin_stock", None, nombre, config)
+    assert nota.splitlines()[1] == "Nombre: sin nombre registrado"
+
+
+def test_nota_sin_pedido_no_lleva_bloque_de_pedido(config: ConfigNegocio) -> None:
+    """R47: sin pedido, solo el motivo y el nombre."""
+    assert nota_de_derivacion("plazo_o_precio", None, "Ana", config) == (
+        "Derivación del bot: Pregunta por precio o plazo.\nNombre: Ana"
+    )
+    vacio = Pedido(telefono=TELEFONO)
+    assert nota_de_derivacion("plazo_o_precio", vacio, "Ana", config) == (
+        "Derivación del bot: Pregunta por precio o plazo.\nNombre: Ana"
+    )
+
+
+def test_nota_con_pedido_a_medias_no_muestra_campos_vacios(config: ConfigNegocio) -> None:
+    """R47: solo los campos que el bot entendió, sin "None" ni etiquetas vacías."""
+    pedido = Pedido(telefono=TELEFONO, producto="gran_formato", cantidad=50, material=MATERIAL_A_DEFINIR)
+    assert nota_de_derivacion("fuera_de_alcance", pedido, None, config).splitlines()[2:] == [
+        "Así entendió el bot el pedido:",
+        "- Trabajo: Gran formato",
+        "- Material: a definir con el asesor",
+        "- Cantidad: 50",
+    ]
+
+
+@pytest.mark.parametrize("estado", ESTADOS_DISENO)
+def test_nota_sin_claves_internas(estado: str, config: ConfigNegocio) -> None:
+    """R6, R47: la nota nunca muestra nombres internos, ids del catálogo, valores del enum ni el teléfono."""
+    nota = nota_de_derivacion("cambio_sobre_pedido_confirmado", _pedido(tiene_diseno=estado), "Ana", config)
+    internos = (*CAMPOS_DEL_PEDIDO, "requiere_servicio", "telefono", "impresion_digital", "None", TELEFONO)
+    for interno in internos:
+        assert interno not in nota, interno
+
+
+def test_cada_motivo_tiene_su_frase_en_la_nota(config: ConfigNegocio) -> None:
+    """R6, R47: los motivos de derivar y el cambio durante la confirmación, cada uno con su frase."""
+    notas = [nota_de_derivacion(motivo, None, None, config) for motivo in MOTIVOS_DE_LA_NOTA]
+    primeras = {nota.splitlines()[0] for nota in notas}
+    assert len(primeras) == len(MOTIVOS_DE_LA_NOTA)
+    assert all("_" not in linea for linea in primeras)
+
+
+def test_nota_de_derivacion_limpia_lo_que_escribio_el_cliente(config: ConfigNegocio) -> None:
+    """R47: sin bidi ni invisibles, ni links ni menciones que Chatwoot interprete en la nota privada."""
+    pedido = _pedido(
+        nombre_cliente="Ana‮abanA", material="lona [x](https://example.com)", medidas="MENTION://team/1/x 2x1"
+    )
+    nota = nota_de_derivacion("lo_pide_el_cliente", pedido, "Ana​‮abanA\x07", config)
+    assert nota.splitlines()[1] == "Nombre: AnaabanA"
+    assert "- A nombre de: AnaabanA" in nota
+    assert "- Material: lona xhttps://example.com" in nota
+    assert "- Medidas: team/1/x 2x1" in nota
+
+
+@pytest.mark.parametrize("valor", ["mention://", "menmention://tion://", "mentioMention://n://","[]()<>‮"])
+def test_nota_de_derivacion_no_rearma_una_mencion_al_limpiar(valor: str, config: ConfigNegocio) -> None:
+    """R47: sacar un "mention://" no deja otro armado con lo que quedó a los costados."""
+    nota = nota_de_derivacion("sin_stock", _pedido(medidas=f"9x5 {valor}"), valor, config)
+    assert "mention://" not in nota.casefold()
+    assert not set("[]()<>‮") & set(nota)
+    assert nota.splitlines()[1] == "Nombre: sin nombre registrado"
+
+
+def _archivo(id_adjunto: int, minuto: int, tipo: str = "pdf") -> ArchivoAdjunto:
+    return ArchivoAdjunto(
+        id_adjunto=id_adjunto, id_mensaje=1, tipo=tipo, tamano=None, hora=datetime(2026, 10, 6, 10, minuto)
+    )
+
+
+def test_nota_de_un_archivo_despues_de_confirmar() -> None:
+    """R32: la nota lleva la línea de la celda para que la persona sume el archivo al pedido."""
+    lineas = texto_de_archivos(Pedido(telefono=TELEFONO, archivos=[_archivo(123, 5)]))
+    assert nota_de_archivos(lineas) == (
+        "Archivo que llegó después de confirmar el pedido.\n1. 06/10 10:05 · pdf · adjunto #123"
+    )
+
+
+def test_nota_de_varios_archivos_en_plural() -> None:
+    """R32, R33: con varios, en plural y una línea por archivo, en el orden de la celda."""
+    lineas = texto_de_archivos(Pedido(telefono=TELEFONO, archivos=[_archivo(123, 5), _archivo(124, 7)]))
+    assert nota_de_archivos(lineas) == (
+        "Archivos que llegaron después de confirmar el pedido.\n"
+        "1. 06/10 10:05 · pdf · adjunto #123\n2. 06/10 10:07 · pdf · adjunto #124"
+    )
+
+
+def test_nota_de_archivos_limpia_la_extension_que_puso_el_cliente() -> None:
+    """R47: la extensión viene del nombre del archivo; sin mención ni link, y una línea por archivo."""
+    archivos = [_archivo(123, 5, "Mention://team/1/x"), _archivo(124, 7, "[p](‮)pdf")]
+    assert nota_de_archivos(texto_de_archivos(Pedido(telefono=TELEFONO, archivos=archivos))) == (
+        "Archivos que llegaron después de confirmar el pedido.\n"
+        "1. 06/10 10:05 · team/1/x · adjunto #123\n2. 06/10 10:07 · ppdf · adjunto #124"
+    )
+
+
+def test_nota_de_archivos_sin_archivos_lanza() -> None:
+    """R32: una nota de archivos es por al menos uno."""
+    with pytest.raises(ValueError):
+        nota_de_archivos("")
+
+
+def test_las_notas_no_tienen_palabras_prohibidas(config: ConfigNegocio) -> None:
+    """R19, R38: las notas tampoco prometen inmediatez ni ponen precio, plazo ni seña."""
+    notas = [
+        *(nota_de_derivacion(motivo, pedido, nombre, config)
+          for motivo in MOTIVOS_DE_LA_NOTA for pedido in (None, _pedido()) for nombre in (None, "Ana")),
+        nota_de_archivos(texto_de_archivos(Pedido(telefono=TELEFONO, archivos=[_archivo(1, 0)]))),
+    ]
+    for nota in notas:
+        for prohibida in PROHIBIDAS:
+            assert not re.search(prohibida, nota.casefold()), (prohibida, nota)
+
+
+# Pregunta del nombre
+
+
+def test_pregunta_del_nombre_debajo_con_el_separador(config: ConfigNegocio) -> None:
+    """R44: la pregunta va debajo de la respuesta elegida, separada por una línea en blanco."""
+    assert con_pregunta_del_nombre(respuesta_faq("direccion", config)) == (
+        "Estamos en Calle Falsa 123. Te esperamos.\n\n¿Cómo es tu nombre? Así te agendamos."
+    )
+
+
+@pytest.mark.parametrize("vacio", ["", "  \n "])
+def test_pregunta_del_nombre_nunca_va_sola(vacio: str) -> None:
+    """R44: nunca sobre una respuesta vacía."""
+    with pytest.raises(ValueError):
+        con_pregunta_del_nombre(vacio)
+
+
 # Todos los textos
 
 
@@ -463,7 +708,7 @@ def test_ningun_texto_da_precio_plazo_ni_sena(config: ConfigNegocio) -> None:
     "malo",
     ["Sale $5000", "La seña es del 50 %", "Dejás un anticipo", "Demora 3 días", "En 5 días hábiles",
      "Te lo entregamos el jueves", "Cuesta poco", "Te contestan en breve", "Enseguida te llaman",
-     "¡Listo! Ya está"],
+     "¡Listo! Ya está", "Ya te contesta un asesor", "Te llaman ya"],
 )
 def test_la_lista_de_prohibidas_detecta_cada_caso(malo: str) -> None:
     """R19: cada patrón de PROHIBIDAS atrapa el texto que quiere impedir."""

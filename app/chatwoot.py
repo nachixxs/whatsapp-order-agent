@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 logger = logging.getLogger(__name__)
 
 TIMEOUT_SEGUNDOS = 10.0
+TIMEOUT_CONTACTO_SEGUNDOS = 5.0  # R45
 
 
 class Contacto(BaseModel):
@@ -19,6 +20,8 @@ class Contacto(BaseModel):
 
     nombre: str | None = None
     telefono: str | None = None
+    id: int | None = None
+    atributos: dict[str, Any] | None = None  # custom_attributes (R45); None = sin dato. Nunca al log (R52)
 
 
 class Adjunto(BaseModel):
@@ -113,57 +116,90 @@ def _armar_mensaje(crudo: dict[str, Any]) -> MensajeEntrante:
         contacto=Contacto(
             nombre=_texto(sender.get("name")) or None,
             telefono=_texto(sender.get("phone_number")) or None,
+            id=_entero(sender.get("id")),
+            atributos=sender.get("custom_attributes") if isinstance(sender.get("custom_attributes"), dict) else None,
         ),
     )
 
 
-def parsear_evento(cuerpo: bytes) -> MensajeEntrante | None:
-    """R51: nunca lanza. Devuelve un mensaje solo si es procesable (R48)."""
+def _cargar(cuerpo: bytes) -> dict[str, Any] | None:
     try:
         crudo = json.loads(cuerpo)
     except Exception:  # R51: JSON invalido, anidado (RecursionError) o bytes raros
         return None
-    if not isinstance(crudo, dict):
-        return None
-    if crudo.get("event") != "message_created":
-        return None
-    # R48: solo incoming; otras formas de message_type (numericas, etc.) se descartan
-    # por ahora y se revisan contra un Chatwoot real en la tarea 1.6.
-    if crudo.get("message_type") != "incoming":
-        return None
-    if _booleano(crudo.get("private")):
+    return crudo if isinstance(crudo, dict) else None
+
+
+def parsear_evento(cuerpo: bytes) -> MensajeEntrante | None:
+    """R51: nunca lanza. Devuelve un mensaje solo si es procesable (R48): incoming y no privado."""
+    crudo = _cargar(cuerpo)
+    if crudo is None or crudo.get("event") != "message_created" or crudo.get("message_type") != "incoming":
         return None
     try:
-        return _armar_mensaje(crudo)
+        return None if _booleano(crudo.get("private")) else _armar_mensaje(crudo)
     except Exception:  # R51: un campo con un tipo inesperado no tumba el parseo
         return None
 
 
+def parsear_estado(cuerpo: bytes) -> MensajeEntrante | None:
+    """R47, R51: id, estado, cuenta e inbox de cualquier evento. Nunca lanza. Un evento de conversacion los trae en la
+    raiz (`id`, `status`, `inbox_id`, `account`); uno de mensaje, en `conversation` e `inbox` (Chatwoot v4.18.0)."""
+    crudo = _cargar(cuerpo)
+    if crudo is not None and _texto(crudo.get("event")).startswith("conversation_"):
+        crudo = {**crudo, "conversation": crudo, "inbox": {"id": crudo.get("inbox_id")}}
+    try:
+        return None if crudo is None else _armar_mensaje(crudo)
+    except Exception:  # R51
+        return None
+
+
 class ClienteChatwoot:
-    """Responde en una conversacion de Chatwoot. Credenciales perezosas (R53)."""
+    """Habla con la API de Chatwoot. Credenciales perezosas (R53). Nada lanza: devuelven True solo con 2xx."""
 
     def __init__(self, cliente_http: httpx.Client | None = None) -> None:
         self._cliente_http = cliente_http
 
-    def responder(self, id_conversacion: int, texto: str) -> None:
+    def _pedir(self, metodo: str, ruta: str, cuerpo: dict[str, Any], token_env: str, timeout: float, accion: str) -> bool:
+        """`ruta` cuelga de la cuenta. True solo con 2xx; nunca lanza (R53)."""
         base_url = os.environ.get("CHATWOOT_URL", "")
         account_id = os.environ.get("CHATWOOT_ACCOUNT_ID", "")
-        token = os.environ.get("CHATWOOT_BOT_TOKEN", "")
+        token = os.environ.get(token_env, "")
         if not (base_url and account_id and token):
-            logger.error("Chatwoot: faltan credenciales, no se pudo responder")
-            return
-        url = f"{base_url}/api/v1/accounts/{account_id}/conversations/{id_conversacion}/messages"
+            logger.error("Chatwoot: faltan credenciales, no se pudo %s", accion)
+            return False
+        url = f"{base_url}/api/v1/accounts/{account_id}/{ruta}"
         propio = self._cliente_http is None
-        cliente = self._cliente_http or httpx.Client(timeout=TIMEOUT_SEGUNDOS)
+        cliente = self._cliente_http or httpx.Client()
         try:
-            respuesta = cliente.post(
-                url,
-                json={"content": texto, "message_type": "outgoing"},
-                headers={"api_access_token": token},
-            )
-            respuesta.raise_for_status()
-        except Exception:  # R53: un fallo de red no expone el token ni tumba el turno
-            logger.error("Chatwoot: fallo al enviar la respuesta")
+            cliente.request(metodo, url, json=cuerpo, headers={"api_access_token": token}, timeout=timeout).raise_for_status()
+            return True
+        except Exception:  # R53: un fallo de red no expone el token ni tumba el turno; nunca el texto ni el error
+            logger.error("Chatwoot: fallo al %s", accion)
+            return False
         finally:
             if propio:
                 cliente.close()
+
+    def _post(self, id_conversacion: int, ruta: str, cuerpo: dict[str, Any], accion: str) -> bool:
+        ruta_completa = f"conversations/{id_conversacion}/{ruta}"
+        return self._pedir("POST", ruta_completa, cuerpo, "CHATWOOT_BOT_TOKEN", TIMEOUT_SEGUNDOS, accion)
+
+    def actualizar_contacto(self, id_contacto: int, atributos: dict[str, Any]) -> bool:
+        """R45: escribe custom_attributes del contacto (Chatwoot los mezcla). Token de agente: el del bot no puede.
+
+        Tope de 5 s y sin reintento: si falla, el turno sigue (R41).
+        """
+        cuerpo = {"custom_attributes": atributos}
+        return self._pedir("PUT", f"contacts/{id_contacto}", cuerpo, "CHATWOOT_AGENTE_TOKEN", TIMEOUT_CONTACTO_SEGUNDOS, "actualizar el contacto")
+
+    def responder(self, id_conversacion: int, texto: str) -> bool:
+        return self._post(id_conversacion, "messages", {"content": texto, "message_type": "outgoing"}, "enviar la respuesta")
+
+    def nota_interna(self, id_conversacion: int, texto: str) -> bool:
+        """Aviso al asesor: un mensaje privado, el cliente no lo ve."""
+        cuerpo = {"content": texto, "message_type": "outgoing", "private": True}
+        return self._post(id_conversacion, "messages", cuerpo, "enviar la nota interna")
+
+    def pasar_a_persona(self, id_conversacion: int) -> bool:
+        """R47: derivar es dejar la conversacion en `open`; desde ahi el bot ya no contesta."""
+        return self._post(id_conversacion, "toggle_status", {"status": "open"}, "pasar la conversacion a open")

@@ -1,36 +1,48 @@
 import logging
+import threading
+from datetime import timedelta
 
 import pytest
 
 from app.agente import Decision, PedirDatoFaltante
 from app.config import ConfigNegocio
-from app.memoria import ErrorMemoria, Memoria
+from app.confirmacion import candado, soltar_pedido_completo
+from app.memoria import CARRERA, ErrorMemoria, Memoria
 from app.pedidos import Pedido
 from app.respuestas import (
     MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION,
     MENSAJE_ERROR_AL_GUARDAR,
     MENSAJE_ERROR_INTERNO,
+    MENSAJE_NO_ENTENDIDO,
     MENSAJE_PEDIDO_CONFIRMADO,
     acuse_de_archivos,
+    con_frase_de_horario,
+    nota_de_archivos,
+    nota_de_derivacion,
     pregunta_por_dato,
     respuesta_faq,
 )
 from app.sheets import ErrorPlanilla
-from app.turno import procesar_lote
+from app.turno import Resultado, procesar_lote
 from tests.conftest import HORA_DE_PRUEBA, TELEFONO
 from tests.test_turno import (
     COMPLETO,
+    CONOCIDO,
     CONV,
     HORARIOS,
     NOMBRE,
+    REGISTRADA,
     _adjunto,
     _Agente,
     _archivo,
     _charla,
+    _con_registro,
     _confirmado,
     _confirmar,
+    _Contactos,
     _historial,
     _lanzar,
+    _lote,
     _mensaje,
     _pedido,
     _pendiente,
@@ -46,6 +58,12 @@ FILA = {
     "producto": "sellos", "material": "goma", "medidas": "4x2 cm", "cantidad": "3", "tiene_diseno": "si",
     "archivos": "", "fecha_necesita": "2026-10-09",
 }
+CAMBIO = "cambio_sobre_pedido_confirmado"  # R6: el motivo de la derivación
+REPREGUNTA = Decision("pedir_dato_faltante", PedirDatoFaltante(dato="producto"))
+
+
+def _fallar(*_: object) -> None:
+    raise ErrorMemoria("confirmaciones: OperationalError")
 
 
 # R1 a R3 · la escritura
@@ -68,7 +86,7 @@ def test_el_si_escribe_la_fila_y_dice_listo(memoria: Memoria, config: ConfigNego
 def test_la_fila_lleva_los_archivos_del_pedido(memoria: Memoria, config: ConfigNegocio) -> None:
     """R29, R9: la celda archivos lleva una línea por archivo, con su hora del negocio y su referencia."""
     adjunto = _adjunto("file", "pdf")
-    procesar_lote(CONV, [_archivo(adjunto)], config, memoria, _Agente(), _Planilla())
+    _lote(CONV, [_archivo(adjunto)], config, memoria, _Agente(), _Planilla())
     _turno(memoria, config, _registrar(**COMPLETO))
     planilla = _Planilla()
 
@@ -123,8 +141,8 @@ def test_una_toma_que_quedo_en_escritura_no_cuenta_como_confirmada(
     assert _turno(memoria, config, _confirmar(True), "sí", planilla) == MENSAJE_ERROR_INTERNO
     agente = _Agente(HORARIOS)
 
-    procesar_lote(CONV, [_mensaje("¿a qué hora abren?")], config, memoria, agente, _Planilla())
-    texto = procesar_lote(CONV, [_archivo()], config, memoria, _Agente(), _Planilla())
+    _lote(CONV, [_mensaje("¿a qué hora abren?")], config, memoria, agente, _Planilla())
+    texto = _lote(CONV, [_archivo()], config, memoria, _Agente(), _Planilla())
 
     assert agente.llamadas[0]["confirmado"] is None
     assert texto == acuse_de_archivos(1, _pedido(memoria), config)
@@ -155,7 +173,7 @@ def test_la_confirmacion_gana_sobre_el_error_de_otro_mensaje_del_lote(
     planilla = _Planilla()
     lote = [_archivo(_adjunto("audio", "ogg")), _mensaje("sí")]
 
-    texto = procesar_lote(CONV, lote, config, memoria, _Agente(_confirmar(True)), planilla)
+    texto = _lote(CONV, lote, config, memoria, _Agente(_confirmar(True)), planilla)
 
     assert texto == MENSAJE_PEDIDO_CONFIRMADO
     assert len(planilla.filas) == 1
@@ -203,15 +221,15 @@ def test_un_segundo_si_despues_de_confirmar_no_contesta(
         _registrar(),
         _registrar(**COMPLETO),
         _registrar(cantidad=3, fecha_necesita="2026-10-09"),
-        _registrar(**COMPLETO | {"nombre_cliente": "Otro Nombre"}),
+        _registrar(**COMPLETO | {"nombre_cliente": "  cliente   PRUEBA "}),
         Decision("pedir_dato_faltante", PedirDatoFaltante(dato="producto")),
     ],
 )
 def test_lo_que_no_cambia_el_confirmado_no_contesta(
     memoria: Memoria, config: ConfigNegocio, decision: Decision
 ) -> None:
-    """R6: sin campos, los mismos datos (por valor; el nombre no es un cambio) o una repregunta: ni texto ni
-    turno del bot, y no arranca otro pedido."""
+    """R6: sin campos, los mismos datos (por valor; el mismo nombre con otras mayúsculas o espacios) o una
+    repregunta: ni texto ni turno del bot, y no arranca otro pedido."""
     _confirmado(memoria, config)
 
     assert _turno(memoria, config, decision, "gracias!") is None
@@ -222,13 +240,13 @@ def test_lo_que_no_cambia_el_confirmado_no_contesta(
 def test_el_confirmado_reenviado_con_un_campo_descartado_no_abre_otro_pedido(
     memoria: Memoria, config: ConfigNegocio
 ) -> None:
-    """R6, R4: pasada la medianoche, el modelo reenvía el confirmado y su fecha, que ya pasó, se descarta. Por
-    valor no cambió nada: ni texto ni turno del bot, y no arranca otro pedido que terminaría en otra fila."""
-    config.fijar_ahora(HORA_DE_PRUEBA.replace(hour=23))
+    """R6, R4: pasada la medianoche y dentro de los 5 minutos, el modelo reenvía el confirmado y su fecha, que
+    ya pasó, se descarta. Por valor no cambió nada: ni texto ni turno del bot, y no arranca otro pedido."""
+    config.fijar_ahora(HORA_DE_PRUEBA.replace(hour=23, minute=58))
     mismo = _registrar(**COMPLETO | {"fecha_necesita": "2026-10-06"})
     _turno(memoria, config, mismo)
     assert _turno(memoria, config, _confirmar(True), "sí") == MENSAJE_PEDIDO_CONFIRMADO
-    config.fijar_ahora(HORA_DE_PRUEBA.replace(day=7, hour=0, minute=30))
+    config.fijar_ahora(HORA_DE_PRUEBA.replace(day=7, hour=0, minute=1))
 
     assert _turno(memoria, config, mismo, "gracias!") is None
     charla = memoria.leer_charla(CONV, config.ahora())
@@ -236,31 +254,121 @@ def test_el_confirmado_reenviado_con_un_campo_descartado_no_abre_otro_pedido(
     assert [mensaje.content for mensaje in charla.mensajes] == ["gracias!"]
 
 
+def test_la_carrera_dura_5_minutos_despues_de_la_fila(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R6, R7: una repregunta a los 4:59 de escrita la fila no contesta; a los 5:00 es un mensaje normal y se
+    contesta, con el confirmado todavía en el prompt."""
+    confirmado = _confirmado(memoria, config)  # la fila se escribe en HORA_DE_PRUEBA
+    agente = _Agente(REPREGUNTA, REPREGUNTA)
+
+    config.fijar_ahora(HORA_DE_PRUEBA + CARRERA - timedelta(seconds=1))
+    antes = _lote(CONV, [_mensaje("quiero otro pedido")], config, memoria, agente, _Planilla())
+    config.fijar_ahora(HORA_DE_PRUEBA + CARRERA)
+    despues = _lote(CONV, [_mensaje("quiero otro pedido")], config, memoria, agente, _Planilla())
+
+    assert antes is None
+    assert despues == pregunta_por_dato("producto", config)
+    assert [llamada["confirmado"] for llamada in agente.llamadas] == [confirmado, confirmado]
+
+
+def test_una_toma_trabada_no_traba_el_pedido_siguiente(
+    memoria: Memoria, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R25, R3: si cerrar la toma falla con la fila escrita, la toma queda en escritura; el pedido siguiente la
+    reemplaza y su "sí" escribe su propia fila, sin esperar las 6 horas."""
+    planilla = _Planilla()
+    _pendiente(memoria, config)
+    with monkeypatch.context() as parche:
+        parche.setattr(memoria, "confirmar_escrito", _fallar)
+        assert _turno(memoria, config, _confirmar(True), "sí", planilla) == MENSAJE_PEDIDO_CONFIRMADO
+    toma = _charla(memoria).toma
+    assert toma is not None and not toma.escrita
+
+    _confirmado(memoria, config, planilla)
+
+    assert planilla.filas == [FILA, FILA]
+    toma = _charla(memoria).toma
+    assert toma is not None and toma.escrita and toma.generacion == 2
+
+
+def test_si_y_dale_seguidos_con_la_toma_trabada_escriben_una_sola_fila(
+    memoria: Memoria, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R4: el "sí" escribe la fila pero no cierra la toma; el "dale" que entra después no la reemplaza: no
+    encuentra pendiente y no deja otra fila."""
+    _pendiente(memoria, config)
+    monkeypatch.setattr(memoria, "confirmar_escrito", _fallar)
+    planilla = _Planilla()
+
+    assert _turno(memoria, config, _confirmar(True), "sí", planilla) == MENSAJE_PEDIDO_CONFIRMADO
+    _turno(memoria, config, _confirmar(True), "dale", planilla)
+
+    assert planilla.filas == [FILA]
+    assert _charla(memoria).pedido is None
+
+
 def test_un_rechazo_sobre_el_confirmado_es_un_cambio(memoria: Memoria, config: ConfigNegocio) -> None:
-    """R6: un rechazo después de confirmar no toca el pedido: contesta que el cambio lo ve un asesor."""
+    """R6, R47: un rechazo después de confirmar no toca el pedido: deriva con la frase de horario (R38) y la
+    nota con el confirmado como lo entendió el bot."""
     confirmado = _confirmado(memoria, config)
 
-    texto = _turno(memoria, config, _confirmar(False), "no, esperá")
+    resultado = procesar_lote(CONV, [_mensaje("no, esperá")], config, memoria, _Agente(_confirmar(False)))
 
-    assert texto == MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION
+    assert resultado == Resultado(
+        con_frase_de_horario(MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION, config, HORA_DE_PRUEBA),
+        nota_de_derivacion(CAMBIO, confirmado, NOMBRE, config), derivar=True,
+    )
     charla = _charla(memoria)
     assert charla.pedido is None
     assert charla.toma is not None and charla.toma.pedido == confirmado
-    assert _historial(memoria)[-1] == "[cambio_sobre_pedido_confirmado]"
+    assert _historial(memoria)[-1] == f"[{CAMBIO}]"
+
+
+@pytest.mark.parametrize(
+    "decision", [_registrar(nombre_cliente="Otro Nombre"), _registrar(**COMPLETO | {"nombre_cliente": "Otro Nombre"})]
+)
+def test_ponelo_a_nombre_de_otro_es_un_cambio(memoria: Memoria, config: ConfigNegocio, decision: Decision) -> None:
+    """R6, R47: "ponelo a nombre de X" dentro de los 5 minutos no queda sin respuesta: es un cambio sobre el
+    confirmado, que no se toca, y deriva con la nota del confirmado."""
+    confirmado = _confirmado(memoria, config)
+
+    resultado = procesar_lote(CONV, [_mensaje("ponelo a nombre de otro")], config, memoria, _Agente(decision))
+
+    assert resultado == Resultado(
+        con_frase_de_horario(MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION, config, HORA_DE_PRUEBA),
+        nota_de_derivacion(CAMBIO, confirmado, NOMBRE, config), derivar=True,
+    )
+    charla = _charla(memoria)
+    assert charla.pedido is None
+    assert charla.toma is not None and charla.toma.pedido == confirmado
+
+
+def test_el_nombre_registrado_sobre_el_confirmado_no_es_un_cambio(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R6, R43: el nombre que ya estaba registrado no es un cambio, aunque el confirmado lleve otro."""
+    _confirmado(memoria, config)
+    contactos = _Contactos()
+
+    texto = _con_registro(memoria, config, _Agente(_registrar(nombre_cliente=REGISTRADA)), contactos, "dale", CONOCIDO)
+
+    assert texto is None
+    assert _charla(memoria).pedido is None and contactos.escritos == []
 
 
 def test_el_acuse_del_archivo_no_tapa_un_cambio_sobre_el_confirmado(
     memoria: Memoria, config: ConfigNegocio
 ) -> None:
     """R6, R30, R32: una foto con "no, esperá" sobre el confirmado: el cliente recibe el aviso del cambio, no
-    el acuse del archivo, y en el historial queda el marcador del cambio."""
-    _confirmado(memoria, config)
-    lote = [_mensaje("no, esperá", adjuntos=[_adjunto("image", "jpg")])]
+    el acuse del archivo; la nota suma el archivo a la de la derivación (R47)."""
+    confirmado = _confirmado(memoria, config)
+    adjunto = _adjunto("image", "jpg")
 
-    texto = procesar_lote(CONV, lote, config, memoria, _Agente(_confirmar(False)), _Planilla())
+    lote = [_mensaje("no, esperá", adjuntos=[adjunto])]
+    resultado = procesar_lote(CONV, lote, config, memoria, _Agente(_confirmar(False)), _Planilla())
 
-    assert texto == MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION
-    assert _historial(memoria) == ["no, esperá", "[cambio_sobre_pedido_confirmado]"]
+    derivacion = nota_de_derivacion(CAMBIO, confirmado, NOMBRE, config)
+    archivo = nota_de_archivos(f"1. 06/10 10:00 · jpg · adjunto #{adjunto.id}")
+    aviso = con_frase_de_horario(MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION, config, HORA_DE_PRUEBA)
+    assert resultado == Resultado(aviso, f"{derivacion}\n\n{archivo}", derivar=True)
+    assert _historial(memoria) == ["no, esperá", f"[{CAMBIO}]"]
 
 
 def test_el_pedido_recien_confirmado_va_al_prompt(memoria: Memoria, config: ConfigNegocio) -> None:
@@ -268,7 +376,7 @@ def test_el_pedido_recien_confirmado_va_al_prompt(memoria: Memoria, config: Conf
     confirmado = _confirmado(memoria, config)
     agente = _Agente(HORARIOS)
 
-    procesar_lote(CONV, [_mensaje("¿a qué hora abren?")], config, memoria, agente, _Planilla())
+    _lote(CONV, [_mensaje("¿a qué hora abren?")], config, memoria, agente, _Planilla())
 
     assert agente.llamadas[0]["confirmado"] == confirmado
     assert agente.llamadas[0]["pedido"] is None
@@ -280,8 +388,8 @@ def test_otro_trabajo_despues_de_confirmar_es_un_pedido_nuevo(memoria: Memoria, 
     _confirmado(memoria, config)
     agente = _Agente(_registrar(producto="acabados", cantidad=200), HORARIOS)
 
-    texto = procesar_lote(CONV, [_mensaje("también 200 anillados")], config, memoria, agente, _Planilla())
-    procesar_lote(CONV, [_mensaje("¿a qué hora abren?")], config, memoria, agente, _Planilla())
+    texto = _lote(CONV, [_mensaje("también 200 anillados")], config, memoria, agente, _Planilla())
+    _lote(CONV, [_mensaje("¿a qué hora abren?")], config, memoria, agente, _Planilla())
 
     assert texto == pregunta_por_dato("material", config)
     assert _pedido(memoria) == Pedido(telefono=TELEFONO, producto="acabados", cantidad=200)
@@ -293,3 +401,58 @@ def test_una_consulta_despues_de_confirmar_se_contesta(memoria: Memoria, config:
     _confirmado(memoria, config)
 
     assert _turno(memoria, config, HORARIOS, "¿a qué hora abren?") == respuesta_faq("horarios", config)
+
+
+# R47 · la conversación llega en otro estado que pending
+
+
+def test_soltar_el_pedido_completo_no_deja_confirmar_el_resumen(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R47: Chatwoot pasó la conversación a open por su cuenta y una persona la devolvió; el "sí" no confirma
+    el resumen que esa persona ya vio."""
+    _pendiente(memoria, config)
+    planilla = _Planilla()
+
+    soltar_pedido_completo(CONV, config, memoria)
+
+    assert _charla(memoria).pedido is None
+    assert _turno(memoria, config, _confirmar(True), "sí", planilla) == MENSAJE_NO_ENTENDIDO
+    assert planilla.filas == []
+
+
+def test_soltar_deja_el_pedido_a_medias(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R47: solo se suelta un pedido completo, como al derivar; uno a medias sigue."""
+    _turno(memoria, config, _registrar(producto="sellos"))
+
+    soltar_pedido_completo(CONV, config, memoria)
+
+    assert _pedido(memoria) == Pedido(telefono=TELEFONO, producto="sellos")
+
+
+def test_soltar_espera_el_candado_del_turno(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R47, R28: suelta con el mismo candado que el turno; con un turno adentro, espera."""
+    _pendiente(memoria, config)
+    hilo = threading.Thread(target=soltar_pedido_completo, args=(CONV, config, memoria))
+    with candado(CONV):
+        hilo.start()
+        hilo.join(timeout=0.3)
+        esperaba = hilo.is_alive()
+    hilo.join(timeout=5)
+
+    assert esperaba and not hilo.is_alive()
+    assert _charla(memoria).pedido is None
+
+
+def test_soltar_nunca_lanza(
+    memoria: Memoria, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """R47, R52: si la memoria falla, no lanza: deja un WARNING con el tipo de error y nada del cliente."""
+    _pendiente(memoria, config)
+    monkeypatch.setattr(memoria, "guardar_pedido", _fallar)
+    caplog.clear()
+
+    soltar_pedido_completo(CONV, config, memoria)
+
+    assert [registro.levelno for registro in caplog.records] == [logging.WARNING]
+    assert "error=ErrorMemoria" in caplog.text
+    for dato in (NOMBRE, TELEFONO, str(CONV)):
+        assert dato not in caplog.text

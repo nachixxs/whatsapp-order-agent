@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
-from app.chatwoot import ClienteChatwoot, parsear_evento
+from app.chatwoot import ClienteChatwoot, parsear_estado, parsear_evento
 from tests.conftest import _payload
 
 
@@ -34,6 +34,47 @@ def test_parsear_evento_tipos_inesperados_en_campos() -> None:
     assert mensaje is not None
     assert mensaje.id_conversacion is None
     assert mensaje.adjuntos == []
+
+
+def test_parsear_estado_evento_de_conversacion() -> None:
+    """R47: en un evento de conversacion, id, estado, cuenta e inbox vienen en la raiz (Chatwoot v4.18.0)."""
+    cuerpo = {"event": "conversation_status_changed", "id": 555, "status": "open", "inbox_id": 2, "account": {"id": 1}}
+    evento = parsear_estado(json.dumps(cuerpo).encode())
+    assert evento is not None
+    assert (evento.id_conversacion, evento.estado_conversacion, evento.account_id, evento.inbox_id) == (555, "open", 1, 2)
+    assert parsear_evento(json.dumps(cuerpo).encode()) is None  # para el turno sigue sin ser un mensaje (R48)
+
+
+@pytest.mark.parametrize("cambios", [{}, {"message_type": "outgoing"}, {"private": True}])
+def test_parsear_estado_mensaje_usa_el_mismo_id_que_el_turno(cambios: dict[str, object]) -> None:
+    """R47: en un mensaje de cualquier tipo el id y el estado salen de `conversation`, igual que en el turno."""
+    cuerpo = json.dumps(_payload(conversation={"id": 555, "status": "snoozed"}, **cambios)).encode()
+    evento = parsear_estado(cuerpo)
+    assert evento is not None
+    assert (evento.id_conversacion, evento.estado_conversacion, evento.account_id, evento.inbox_id) == (555, "snoozed", 1, 2)
+    mensaje = parsear_evento(cuerpo)
+    assert mensaje is None or mensaje.id_conversacion == evento.id_conversacion
+
+
+@pytest.mark.parametrize(
+    "cuerpo",
+    [
+        pytest.param(b"{no es json", id="json_roto"),
+        pytest.param(b"[1]", id="lista"),
+        pytest.param(b"[" * 50_000 + b"]" * 50_000, id="anidado_profundo"),
+        pytest.param(b"{}", id="vacio"),
+        pytest.param(b'{"event": 5, "conversation": 7}', id="tipos_raros"),
+        pytest.param(
+            b'{"event": "conversation_updated", "id": {"x": 1}, "status": ["open"], "account": "x", "inbox_id": [1]}',
+            id="campos_con_otro_tipo",
+        ),
+        pytest.param('{"event": "conversation_opened", "id": 1, "status": "a\\ud83d"}'.encode(), id="surrogate_escapado"),
+    ],
+)
+def test_parsear_estado_nunca_lanza(cuerpo: bytes) -> None:
+    """R51: un cuerpo roto o con tipos raros da None o un evento sin id; nunca una excepcion."""
+    evento = parsear_estado(cuerpo)
+    assert evento is None or evento.id_conversacion is None or evento.id_conversacion == 1
 
 
 def test_responder_sin_credenciales_no_lanza(caplog: pytest.LogCaptureFixture) -> None:
@@ -110,3 +151,120 @@ def test_creado_en_utc_y_none_si_falta_o_es_invalido() -> None:
         mensaje = parsear_evento(json.dumps(_payload(created_at=valor)).encode())
         assert mensaje is not None
         assert mensaje.creado is None
+
+
+def _cliente(monkeypatch: pytest.MonkeyPatch, estado: int = 200, error: bool = False) -> tuple[ClienteChatwoot, list[httpx.Request]]:
+    monkeypatch.setenv("CHATWOOT_URL", "http://chatwoot.local")
+    monkeypatch.setenv("CHATWOOT_ACCOUNT_ID", "1")
+    monkeypatch.setenv("CHATWOOT_BOT_TOKEN", "secreto-de-prueba")
+    llamadas: list[httpx.Request] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        llamadas.append(request)
+        if error:
+            raise httpx.ReadTimeout("timeout", request=request)
+        return httpx.Response(estado, json={})
+
+    return ClienteChatwoot(cliente_http=httpx.Client(transport=httpx.MockTransport(_handler))), llamadas
+
+
+def test_nota_interna_es_un_mensaje_privado(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R47: el aviso al asesor es un mensaje con private=true y message_type outgoing."""
+    cliente, llamadas = _cliente(monkeypatch)
+    assert cliente.nota_interna(555, "Nota de prueba") is True
+    assert llamadas[0].url.path == "/api/v1/accounts/1/conversations/555/messages"
+    assert json.loads(llamadas[0].content) == {"content": "Nota de prueba", "message_type": "outgoing", "private": True}
+
+
+def test_pasar_a_persona_pone_la_conversacion_en_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R47: derivar es toggle_status con status open."""
+    cliente, llamadas = _cliente(monkeypatch)
+    assert cliente.pasar_a_persona(555) is True
+    assert llamadas[0].url.path == "/api/v1/accounts/1/conversations/555/toggle_status"
+    assert json.loads(llamadas[0].content) == {"status": "open"}
+    assert llamadas[0].headers["api_access_token"] == "secreto-de-prueba"
+
+
+@pytest.mark.parametrize("estado, error", [(400, False), (404, False), (500, False), (200, True)])
+@pytest.mark.parametrize("accion", ["responder", "nota_interna", "pasar_a_persona"])
+def test_fallo_de_chatwoot_da_false_sin_lanzar_ni_loguear_secretos(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, accion: str, estado: int, error: bool
+) -> None:
+    """R52, R53: 4xx, 5xx o timeout devuelven False; ni el token ni el texto llegan al log."""
+    cliente, _ = _cliente(monkeypatch, estado, error)
+    llamar = getattr(cliente, accion)
+    with caplog.at_level("INFO"):
+        resultado = llamar(555) if accion == "pasar_a_persona" else llamar(555, "texto-del-cliente")
+    assert resultado is False
+    assert "secreto-de-prueba" not in caplog.text
+    assert "texto-del-cliente" not in caplog.text
+
+
+@pytest.mark.parametrize("faltante", ["CHATWOOT_URL", "CHATWOOT_ACCOUNT_ID", "CHATWOOT_BOT_TOKEN"])
+def test_falta_una_credencial_da_false_sin_llamar_a_la_red(monkeypatch: pytest.MonkeyPatch, faltante: str) -> None:
+    """R53: sin una de las tres credenciales no se hace ningun pedido."""
+    cliente, llamadas = _cliente(monkeypatch)
+    monkeypatch.delenv(faltante)
+    assert cliente.nota_interna(555, "x") is False
+    assert cliente.pasar_a_persona(555) is False
+    assert cliente.responder(555, "x") is False
+    assert llamadas == []
+
+
+def _con_sender(**sender: object) -> bytes:
+    return json.dumps(_payload(sender=sender)).encode()
+
+
+def test_contacto_trae_id_y_atributos() -> None:
+    """R45: el id y los custom_attributes del sender llegan al Contacto."""
+    mensaje = parsear_evento(_con_sender(id=77, name="Ana", custom_attributes={"nombre_preguntado": True}))
+    assert mensaje is not None
+    assert mensaje.contacto.id == 77
+    assert mensaje.contacto.atributos == {"nombre_preguntado": True}
+
+
+@pytest.mark.parametrize("crudo", [{}, {"id": "x", "custom_attributes": None}, {"id": [1], "custom_attributes": "texto"}, {"custom_attributes": [1]}])
+def test_contacto_sin_id_o_atributos_validos_da_none_sin_lanzar(crudo: dict[str, object]) -> None:
+    """R45, R51: tipos raros dan None (sin dato), nunca una excepcion."""
+    mensaje = parsear_evento(_con_sender(**crudo))
+    assert mensaje is not None
+    assert mensaje.contacto.id is None
+    assert mensaje.contacto.atributos is None
+
+
+def test_actualizar_contacto_hace_put_con_el_token_de_agente_y_5_segundos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R45: PUT del contacto con CHATWOOT_AGENTE_TOKEN (no el del bot) y tope de 5 s."""
+    cliente, llamadas = _cliente(monkeypatch)
+    monkeypatch.setenv("CHATWOOT_AGENTE_TOKEN", "token-agente-prueba")
+    assert cliente.actualizar_contacto(77, {"nombre_cliente": "Ana"}) is True
+    assert llamadas[0].method == "PUT"
+    assert llamadas[0].url.path == "/api/v1/accounts/1/contacts/77"
+    assert json.loads(llamadas[0].content) == {"custom_attributes": {"nombre_cliente": "Ana"}}
+    assert llamadas[0].headers["api_access_token"] == "token-agente-prueba"
+    assert llamadas[0].extensions["timeout"]["read"] == 5.0
+
+
+@pytest.mark.parametrize("estado, error", [(400, False), (404, False), (500, False), (200, True)])
+def test_actualizar_contacto_fallido_da_false_sin_secretos_en_el_log(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, estado: int, error: bool
+) -> None:
+    """R45, R52: 4xx, 5xx o timeout dan False, sin reintento; ni token ni datos al log."""
+    cliente, llamadas = _cliente(monkeypatch, estado, error)
+    monkeypatch.setenv("CHATWOOT_AGENTE_TOKEN", "token-agente-prueba")
+    with caplog.at_level("INFO"):
+        assert cliente.actualizar_contacto(77, {"nombre_cliente": "dato-del-cliente"}) is False
+    assert len(llamadas) == 1
+    assert "token-agente-prueba" not in caplog.text
+    assert "dato-del-cliente" not in caplog.text
+
+
+def test_actualizar_contacto_sin_token_de_agente_da_false_aunque_este_el_del_bot(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """R45: el token del bot no sirve para contactos; sin el de agente no hay red."""
+    cliente, llamadas = _cliente(monkeypatch)
+    monkeypatch.delenv("CHATWOOT_AGENTE_TOKEN", raising=False)
+    with caplog.at_level("INFO"):
+        assert cliente.actualizar_contacto(77, {"nombre_cliente": "dato-del-cliente"}) is False
+    assert llamadas == []
+    assert "dato-del-cliente" not in caplog.text
