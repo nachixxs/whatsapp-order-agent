@@ -168,3 +168,62 @@ def test_falta_una_credencial_da_false_sin_llamar_a_la_red(monkeypatch: pytest.M
     assert cliente.pasar_a_persona(555) is False
     assert cliente.responder(555, "x") is False
     assert llamadas == []
+
+
+def _con_sender(**sender: object) -> bytes:
+    return json.dumps(_payload(sender=sender)).encode()
+
+
+def test_contacto_trae_id_y_atributos() -> None:
+    """R45: el id y los custom_attributes del sender llegan al Contacto."""
+    mensaje = parsear_evento(_con_sender(id=77, name="Ana", custom_attributes={"nombre_preguntado": True}))
+    assert mensaje is not None
+    assert mensaje.contacto.id == 77
+    assert mensaje.contacto.atributos == {"nombre_preguntado": True}
+
+
+@pytest.mark.parametrize("crudo", [{}, {"id": "x", "custom_attributes": None}, {"id": [1], "custom_attributes": "texto"}, {"custom_attributes": [1]}])
+def test_contacto_sin_id_o_atributos_validos_da_none_sin_lanzar(crudo: dict[str, object]) -> None:
+    """R45, R51: tipos raros dan None (sin dato), nunca una excepcion."""
+    mensaje = parsear_evento(_con_sender(**crudo))
+    assert mensaje is not None
+    assert mensaje.contacto.id is None
+    assert mensaje.contacto.atributos is None
+
+
+def test_actualizar_contacto_hace_put_con_el_token_de_agente_y_5_segundos(monkeypatch: pytest.MonkeyPatch) -> None:
+    """R45: PUT del contacto con CHATWOOT_AGENTE_TOKEN (no el del bot) y tope de 5 s."""
+    cliente, llamadas = _cliente(monkeypatch)
+    monkeypatch.setenv("CHATWOOT_AGENTE_TOKEN", "token-agente-prueba")
+    assert cliente.actualizar_contacto(77, {"nombre_cliente": "Ana"}) is True
+    assert llamadas[0].method == "PUT"
+    assert llamadas[0].url.path == "/api/v1/accounts/1/contacts/77"
+    assert json.loads(llamadas[0].content) == {"custom_attributes": {"nombre_cliente": "Ana"}}
+    assert llamadas[0].headers["api_access_token"] == "token-agente-prueba"
+    assert llamadas[0].extensions["timeout"]["read"] == 5.0
+
+
+@pytest.mark.parametrize("estado, error", [(400, False), (404, False), (500, False), (200, True)])
+def test_actualizar_contacto_fallido_da_false_sin_secretos_en_el_log(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, estado: int, error: bool
+) -> None:
+    """R45, R52: 4xx, 5xx o timeout dan False, sin reintento; ni token ni datos al log."""
+    cliente, llamadas = _cliente(monkeypatch, estado, error)
+    monkeypatch.setenv("CHATWOOT_AGENTE_TOKEN", "token-agente-prueba")
+    with caplog.at_level("INFO"):
+        assert cliente.actualizar_contacto(77, {"nombre_cliente": "dato-del-cliente"}) is False
+    assert len(llamadas) == 1
+    assert "token-agente-prueba" not in caplog.text
+    assert "dato-del-cliente" not in caplog.text
+
+
+def test_actualizar_contacto_sin_token_de_agente_da_false_aunque_este_el_del_bot(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """R45: el token del bot no sirve para contactos; sin el de agente no hay red."""
+    cliente, llamadas = _cliente(monkeypatch)
+    monkeypatch.delenv("CHATWOOT_AGENTE_TOKEN", raising=False)
+    with caplog.at_level("INFO"):
+        assert cliente.actualizar_contacto(77, {"nombre_cliente": "dato-del-cliente"}) is False
+    assert llamadas == []
+    assert "dato-del-cliente" not in caplog.text
