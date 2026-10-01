@@ -1,5 +1,7 @@
 """Los textos que lee el cliente, armados por Python desde la config (R19)."""
 
+import re
+import unicodedata
 from collections.abc import Sequence
 from datetime import date, datetime
 
@@ -72,7 +74,7 @@ _MOTIVO_PARA_EL_ASESOR: dict[str, str] = {
 }
 SIN_NOMBRE = "sin nombre registrado"
 PREGUNTA_DEL_NOMBRE = "¿Cómo es tu nombre? Así te agendamos."  # R44
-_SEPARADOR_DEL_PRIMER_CONTACTO = "\n\n"
+_SINTAXIS_DE_CHATWOOT = re.compile(r"[\[\]()<>]|mention://", re.IGNORECASE)  # R47: links y menciones; los C* salen aparte
 
 
 def listar(items: Sequence[str], conector: str = "o") -> str:
@@ -216,18 +218,23 @@ def con_frase_de_horario(texto: str, config: ConfigNegocio, ahora: datetime) -> 
     return f"{base}: {dia} desde las {apertura:%H:%M}."
 
 
+def _para_nota(valor: str | None) -> str:
+    texto = _SINTAXIS_DE_CHATWOOT.sub("", "".join(c for c in valor or "" if unicodedata.category(c)[0] != "C"))
+    return texto if texto == (valor or "") else _para_nota(texto)  # sacar puede armar otro "mention://"
+
+
 def nota_de_derivacion(motivo: str, pedido: Pedido | None, nombre: str | None, config: ConfigNegocio) -> str:
     """R47: la nota interna para el asesor. R6: el pedido con las etiquetas del resumen, sin vacíos."""
-    nombre = en_una_linea(nombre or "") or SIN_NOMBRE
+    nombre = _para_nota(en_una_linea(nombre or "")) or SIN_NOMBRE
     lineas = [f"Derivación del bot: {_MOTIVO_PARA_EL_ASESOR[motivo]}.", f"Nombre: {nombre}"]
     if pedido is None:
         return "\n".join(lineas)
     familias = {producto.id: producto.familia for producto in config.catalogo}
     datos = [
-        ("- A nombre de:", pedido.nombre_cliente),
+        ("- A nombre de:", _para_nota(pedido.nombre_cliente)),
         ("- Trabajo:", familias.get(pedido.producto or "", pedido.producto)),
-        ("- Material:", pedido.material),
-        ("- Medidas:", pedido.medidas),
+        ("- Material:", _para_nota(pedido.material)),
+        ("- Medidas:", _para_nota(pedido.medidas)),
         ("- Cantidad:", pedido.cantidad),
         ("- Diseño:", pedido.tiene_diseno and _DISENO_PARA_EL_ASESOR[pedido.tiene_diseno]),
         ("- Lo necesita para el", pedido.fecha_necesita and fecha_en_palabras(pedido.fecha_necesita)),
@@ -243,14 +250,14 @@ def nota_de_archivos(lineas: str) -> str:
     if cantidad < 1:
         raise ValueError("una nota de archivos es por al menos un archivo")
     encabezado = "Archivo que llegó" if cantidad == 1 else "Archivos que llegaron"
-    return f"{encabezado} después de confirmar el pedido.\n{lineas}"
+    return f"{encabezado} después de confirmar el pedido.\n" + "\n".join(map(_para_nota, lineas.splitlines()))
 
 
 def con_pregunta_del_nombre(texto: str) -> str:
     """R44: la pregunta va debajo de la respuesta elegida, nunca sola."""
     if not texto.strip():
         raise ValueError("la pregunta del nombre va debajo de una respuesta")
-    return f"{texto}{_SEPARADOR_DEL_PRIMER_CONTACTO}{PREGUNTA_DEL_NOMBRE}"
+    return f"{texto}\n\n{PREGUNTA_DEL_NOMBRE}"
 
 
 def acuse_de_archivos(recibidos: int, pedido: Pedido, config: ConfigNegocio) -> str:

@@ -606,9 +606,30 @@ def test_cada_motivo_tiene_su_frase_en_la_nota(config: ConfigNegocio) -> None:
     assert all("_" not in linea for linea in primeras)
 
 
-def _archivo(id_adjunto: int, minuto: int) -> ArchivoAdjunto:
+def test_nota_de_derivacion_limpia_lo_que_escribio_el_cliente(config: ConfigNegocio) -> None:
+    """R47: sin bidi ni invisibles, ni links ni menciones que Chatwoot interprete en la nota privada."""
+    pedido = _pedido(
+        nombre_cliente="Ana‮abanA", material="lona [x](https://example.com)", medidas="MENTION://team/1/x 2x1"
+    )
+    nota = nota_de_derivacion("lo_pide_el_cliente", pedido, "Ana​‮abanA\x07", config)
+    assert nota.splitlines()[1] == "Nombre: AnaabanA"
+    assert "- A nombre de: AnaabanA" in nota
+    assert "- Material: lona xhttps://example.com" in nota
+    assert "- Medidas: team/1/x 2x1" in nota
+
+
+@pytest.mark.parametrize("valor", ["mention://", "menmention://tion://", "mentioMention://n://","[]()<>‮"])
+def test_nota_de_derivacion_no_rearma_una_mencion_al_limpiar(valor: str, config: ConfigNegocio) -> None:
+    """R47: sacar un "mention://" no deja otro armado con lo que quedó a los costados."""
+    nota = nota_de_derivacion("sin_stock", _pedido(medidas=f"9x5 {valor}"), valor, config)
+    assert "mention://" not in nota.casefold()
+    assert not set("[]()<>‮") & set(nota)
+    assert nota.splitlines()[1] == "Nombre: sin nombre registrado"
+
+
+def _archivo(id_adjunto: int, minuto: int, tipo: str = "pdf") -> ArchivoAdjunto:
     return ArchivoAdjunto(
-        id_adjunto=id_adjunto, id_mensaje=1, tipo="pdf", tamano=None, hora=datetime(2026, 10, 6, 10, minuto)
+        id_adjunto=id_adjunto, id_mensaje=1, tipo=tipo, tamano=None, hora=datetime(2026, 10, 6, 10, minuto)
     )
 
 
@@ -626,6 +647,15 @@ def test_nota_de_varios_archivos_en_plural() -> None:
     assert nota_de_archivos(lineas) == (
         "Archivos que llegaron después de confirmar el pedido.\n"
         "1. 06/10 10:05 · pdf · adjunto #123\n2. 06/10 10:07 · pdf · adjunto #124"
+    )
+
+
+def test_nota_de_archivos_limpia_la_extension_que_puso_el_cliente() -> None:
+    """R47: la extensión viene del nombre del archivo; sin mención ni link, y una línea por archivo."""
+    archivos = [_archivo(123, 5, "Mention://team/1/x"), _archivo(124, 7, "[p](‮)pdf")]
+    assert nota_de_archivos(texto_de_archivos(Pedido(telefono=TELEFONO, archivos=archivos))) == (
+        "Archivos que llegaron después de confirmar el pedido.\n"
+        "1. 06/10 10:05 · team/1/x · adjunto #123\n2. 06/10 10:07 · ppdf · adjunto #124"
     )
 
 
