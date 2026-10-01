@@ -9,7 +9,7 @@ from pathlib import Path
 
 REGLAS = frozenset(range(1, 56))
 # Las del CP4 (primer contacto y nombre). Al cubrir una, se saca de acá
-PENDIENTES = frozenset({41, 42, 44})
+PENDIENTES: frozenset[int] = frozenset()
 _TESTS = Path(__file__).parent
 
 
