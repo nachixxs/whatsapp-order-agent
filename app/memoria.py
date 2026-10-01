@@ -61,6 +61,7 @@ class Charla(BaseModel):
 
     mensajes: list[Mensaje] = []
     pedido: Pedido | None = None  # R26: uno que ya no valida descarta la charla al leerla
+    atributos: dict[str, str | bool] = {}  # R45: lo que esta charla escribió en el contacto de Chatwoot
     generacion: int = 0  # R5: no se guarda con la charla, sale de `generaciones`
     toma: Toma | None = None  # R6, R7: tampoco; sale de `confirmaciones` y vence aparte
 
@@ -186,7 +187,15 @@ class Memoria:
         with self._transaccion("charlas") as con:
             charla = _leer(con, conversacion, ahora_s)
             mensajes = [*charla.mensajes, mensaje][-self._tope :]  # R22
-            _escribir(con, conversacion, Charla(mensajes=mensajes, pedido=charla.pedido), ahora_s)
+            _escribir(con, conversacion, charla.model_copy(update={"mensajes": mensajes}), ahora_s)
+
+    def anotar_atributos(self, conversacion: int, atributos: dict[str, object], ahora: datetime) -> None:
+        """R45: lo escrito en el contacto le gana a un payload que se armó antes de escribirlo (R42)."""
+        ahora_s = _segundos(ahora)
+        with self._transaccion("charlas") as con:
+            charla = _leer(con, conversacion, ahora_s)
+            escritos = charla.atributos | atributos
+            _escribir(con, conversacion, charla.model_copy(update={"atributos": escritos}), ahora_s)
 
     def guardar_pedido(
         self, conversacion: int, pedido: Pedido | None, generacion: int, ahora: datetime
@@ -197,7 +206,7 @@ class Memoria:
             charla = _leer(con, conversacion, ahora_s)
             if charla.generacion != generacion:
                 return False
-            _escribir(con, conversacion, Charla(mensajes=charla.mensajes, pedido=pedido), ahora_s)
+            _escribir(con, conversacion, charla.model_copy(update={"pedido": pedido}), ahora_s)
             return True
 
     def tomar_para_confirmar(self, conversacion: int, ahora: datetime) -> Toma | None:
@@ -216,7 +225,7 @@ class Memoria:
             datos = toma.model_dump_json(exclude={"escrita"})
             sql = "REPLACE INTO confirmaciones VALUES (?, ?, ?, ?, 0)"
             con.execute(sql, (conversacion, ahora_s, datos, self.epoca))  # R25
-            _escribir(con, conversacion, Charla(mensajes=charla.mensajes), ahora_s)
+            _escribir(con, conversacion, charla.model_copy(update={"pedido": None}), ahora_s)
             return toma
 
     def confirmar_escrito(self, conversacion: int, toma: Toma, ahora: datetime) -> None:
@@ -227,11 +236,10 @@ class Memoria:
             if charla.toma == toma:  # R6, R7: queda como recién confirmado, con el TTL desde ahora
                 sql = "UPDATE confirmaciones SET actualizada = ?, escrita = 1 WHERE conversacion = ?"
                 con.execute(sql, (ahora_s, conversacion))
-            if charla.pedido is None:
-                con.execute("DELETE FROM charlas WHERE conversacion = ?", (conversacion,))
-            else:  # R22: nació durante la escritura; se conserva, sin el historial del confirmado
+            if charla.pedido is not None:  # R22: nació durante la escritura; se conserva, sin el historial
                 logger.warning("Memoria: nació un pedido durante la escritura; se conserva")
-                _escribir(con, conversacion, Charla(pedido=charla.pedido), ahora_s)
+            # R22: la charla se cierra. R45: lo escrito en el contacto sigue ganándole a un payload viejo
+            _escribir(con, conversacion, Charla(pedido=charla.pedido, atributos=charla.atributos), ahora_s)
 
     def devolver_a_pendiente(self, conversacion: int, toma: Toma, ahora: datetime) -> None:
         """R2: falló la planilla; el pedido vuelve a la charla con el marcador de la falla."""
@@ -246,7 +254,8 @@ class Memoria:
                 logger.warning("Memoria: falló la escritura con otro pedido en curso; queda el devuelto")
             marcador = Mensaje(role="assistant", content=f"[{CONFIRMACION_FALLIDA}]")  # R21
             mensajes = [*charla.mensajes, marcador][-self._tope :]  # R22
-            _escribir(con, conversacion, Charla(mensajes=mensajes, pedido=toma.pedido), ahora_s)
+            devuelta = charla.model_copy(update={"mensajes": mensajes, "pedido": toma.pedido})
+            _escribir(con, conversacion, devuelta, ahora_s)
 
     def marcar_procesado(self, id_mensaje: int, ahora: datetime) -> bool:
         """True si el id es nuevo (R23). Si la base falla, lanza en vez de dejar pasar (R24)."""

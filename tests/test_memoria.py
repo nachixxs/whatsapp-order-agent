@@ -156,6 +156,23 @@ def test_confirmar_conserva_el_pedido_nacido_durante_la_escritura(memoria: Memor
     assert charla.mensajes == [] and charla.pedido == PEDIDO
 
 
+def test_lo_escrito_en_el_contacto_sobrevive_a_la_confirmacion(memoria: Memoria) -> None:
+    """R45, R42: lo que la charla escribió en el contacto sigue ahí al anotar, tomar, devolver y confirmar,
+    para que un payload viejo no dé de alta otra vez al contacto; vence con la charla (R22)."""
+    memoria.anotar_atributos(CONV, {"primer_contacto": T0.isoformat(), "nombre_preguntado": True}, T0)
+    memoria.anotar_atributos(CONV, {"nombre_cliente": "Ana Prueba"}, T0)
+    esperado = {"primer_contacto": T0.isoformat(), "nombre_preguntado": True, "nombre_cliente": "Ana Prueba"}
+
+    memoria.anotar_cliente(CONV, "hola", T0)
+    memoria.devolver_a_pendiente(CONV, _tomar(memoria), T0)
+    toma = memoria.tomar_para_confirmar(CONV, T0)
+    assert toma is not None and memoria.leer_charla(CONV, T0).atributos == esperado
+    memoria.confirmar_escrito(CONV, toma, T0)
+
+    assert memoria.leer_charla(CONV, T0).atributos == esperado
+    assert memoria.leer_charla(CONV, T0 + TTL_CHARLA).atributos == {}
+
+
 # R23 y R24 · dedup y compuerta
 
 

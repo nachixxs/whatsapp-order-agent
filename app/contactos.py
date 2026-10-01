@@ -3,7 +3,8 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from app.formato import en_una_linea
+from app.chatwoot import Contacto
+from app.formato import en_una_linea, solo_digitos
 from app.memoria import TTL_CHARLA
 from app.pedidos import TOPE_NOMBRE
 
@@ -27,6 +28,12 @@ def nombre_limpio(valor: object) -> str | None:
     return en_una_linea(valor)[:TOPE_NOMBRE].rstrip() or None  # R44: el mismo tope que el del pedido
 
 
+def nombre_del_perfil(contacto: Contacto) -> str | None:
+    """R43: sin perfil, Chatwoot le pone el teléfono de nombre; el teléfono nunca va a la API (R13)."""
+    nombre, telefono = nombre_limpio(contacto.nombre), solo_digitos(contacto.telefono or "")
+    return None if nombre and telefono and solo_digitos(nombre) == telefono else nombre
+
+
 def _fecha(valor: object) -> datetime | None:
     try:
         fecha = datetime.fromisoformat(valor)  # type: ignore[arg-type]
@@ -35,10 +42,12 @@ def _fecha(valor: object) -> datetime | None:
     return fecha if fecha.utcoffset() is not None else None  # R42: sin zona, la ventana no se puede medir
 
 
-def leer_registro(atributos: object) -> Registro | None:
-    """R41, R45: nunca lanza. None es sin dato; un valor ilegible cuenta como ausente."""
+def leer_registro(atributos: object, escritos: dict[str, object] | None = None) -> Registro | None:
+    """R41, R45: nunca lanza. None es sin dato; un valor ilegible cuenta como ausente. Lo que la charla ya
+    escribió (`escritos`) le gana al payload, que pudo armarse antes del alta (R42)."""
     if not isinstance(atributos, dict):
         return None
+    atributos = atributos | (escritos or {})
     return Registro(
         primer_contacto=_fecha(atributos.get("primer_contacto")),
         nombre_preguntado=atributos.get("nombre_preguntado") is True,
@@ -77,8 +86,8 @@ def plan_primer_contacto(
         return Plan(None, False)
     dicho = None if _mismo(nombre_dicho, nombre_perfil) else nombre_dicho
     if registro.primer_contacto is None:  # R42: la repregunta del nombre ya es la pregunta
-        if dicho:
-            return Plan(atributos_del_alta(ahora, preguntado=False, nombre=dicho), False)
+        if dicho or nombre_confirmado:  # R45: el que dijo, o el del pedido que confirmó en este lote
+            return Plan(atributos_del_alta(ahora, preguntado=False, nombre=dicho or nombre_confirmado), False)
         return Plan(atributos_del_alta(ahora, preguntado=True), not repregunta_del_nombre)
     nombre = dicho if pregunta_viva(registro, ahora) else None  # R42
     # R45: el del pedido confirmado; R43: el del perfil no pisa uno registrado

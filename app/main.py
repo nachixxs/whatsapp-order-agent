@@ -170,11 +170,11 @@ def _procesar_turno(
     if id_conversacion is None:
         logger.warning("Webhook Chatwoot: sin id de conversacion, no se responde")
         return
-    texto = procesar_lote(id_conversacion, lote, config, memoria)
-    if texto is None:
+    resultado = procesar_lote(id_conversacion, lote, config, memoria)
+    if resultado.texto is None:
         return
     try:
-        cliente.responder(id_conversacion, texto)
+        cliente.responder(id_conversacion, resultado.texto)
     except (httpx.HTTPError, OSError) as error:
         # R52: solo el tipo del error, nunca su mensaje (puede traer la URL con el id de conversacion)
         logger.error("Webhook Chatwoot: fallo al responder alias=%s error=%s", alias_conversacion(id_conversacion), type(error).__name__)

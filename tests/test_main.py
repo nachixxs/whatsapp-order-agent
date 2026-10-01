@@ -14,6 +14,7 @@ from app.chatwoot import ClienteChatwoot
 from app.config import ConfigNegocio
 from app.main import app, get_cliente_chatwoot, get_config, get_memoria, workers_pedidos
 from app.memoria import Memoria
+from app.turno import Resultado
 from tests.conftest import _payload as _payload_base
 
 SECRETO = "secreto-de-prueba"
@@ -50,15 +51,15 @@ def cliente_falso() -> ClienteFalso:
 
 
 class TurnoFalso:
-    """Reemplaza a procesar_lote: anota los llamados y devuelve `texto` (sin API ni SQLite)."""
+    """Reemplaza a procesar_lote: anota los llamados y devuelve un Resultado con `texto` (sin API ni SQLite)."""
 
     def __init__(self) -> None:
         self.llamados: list[tuple[int, list[object], object, object]] = []
         self.texto: str | None = "respuesta del turno"
 
-    def __call__(self, conversacion: int, mensajes: object, config: object, memoria: object) -> str | None:
+    def __call__(self, conversacion: int, mensajes: object, config: object, memoria: object) -> Resultado:
         self.llamados.append((conversacion, list(mensajes), config, memoria))  # type: ignore[call-overload]
-        return self.texto
+        return Resultado(self.texto)
 
 
 @pytest.fixture
