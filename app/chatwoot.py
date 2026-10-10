@@ -80,9 +80,7 @@ def _adjunto(crudo: object) -> Adjunto | None:
     if id_adjunto is None:
         return None
     return Adjunto(
-        id=id_adjunto,
-        tipo=_texto(datos.get("file_type")),
-        extension=_texto(datos.get("extension")) or None,
+        id=id_adjunto, tipo=_texto(datos.get("file_type")), extension=_texto(datos.get("extension")) or None,
         tamano=_entero(datos.get("file_size")),
     )
 
@@ -104,18 +102,13 @@ def _armar_mensaje(crudo: dict[str, Any]) -> MensajeEntrante:
     adjuntos = crudo.get("attachments")
     adjuntos = adjuntos if isinstance(adjuntos, list) else []
     return MensajeEntrante(
-        evento=_texto(crudo.get("event")) or "message_created",
-        id_mensaje=_entero(crudo.get("id")),
-        contenido=_texto(crudo.get("content")),
-        adjuntos=[a for a in map(_adjunto, adjuntos) if a is not None],
-        creado=_creado(crudo.get("created_at")),
-        id_conversacion=_entero(conversacion.get("id")),
-        account_id=_entero(account.get("id")),
-        inbox_id=_entero(inbox.get("id")),
+        evento=_texto(crudo.get("event")) or "message_created", id_mensaje=_entero(crudo.get("id")),
+        contenido=_texto(crudo.get("content")), adjuntos=[a for a in map(_adjunto, adjuntos) if a is not None],
+        creado=_creado(crudo.get("created_at")), id_conversacion=_entero(conversacion.get("id")),
+        account_id=_entero(account.get("id")), inbox_id=_entero(inbox.get("id")),
         estado_conversacion=_texto(conversacion.get("status")) or None,
         contacto=Contacto(
-            nombre=_texto(sender.get("name")) or None,
-            telefono=_texto(sender.get("phone_number")) or None,
+            nombre=_texto(sender.get("name")) or None, telefono=_texto(sender.get("phone_number")) or None,
             id=_entero(sender.get("id")),
             atributos=sender.get("custom_attributes") if isinstance(sender.get("custom_attributes"), dict) else None,
         ),
@@ -186,9 +179,7 @@ class ClienteChatwoot:
 
     def actualizar_contacto(self, id_contacto: int, atributos: dict[str, Any]) -> bool:
         """R45: escribe custom_attributes del contacto (Chatwoot los mezcla). Token de agente: el del bot no puede.
-
-        Tope de 5 s y sin reintento: si falla, el turno sigue (R41).
-        """
+        Tope de 5 s y sin reintento: si falla, el turno sigue (R41)."""
         cuerpo = {"custom_attributes": atributos}
         return self._pedir("PUT", f"contacts/{id_contacto}", cuerpo, "CHATWOOT_AGENTE_TOKEN", TIMEOUT_CONTACTO_SEGUNDOS, "actualizar el contacto")
 
@@ -196,7 +187,6 @@ class ClienteChatwoot:
         return self._post(id_conversacion, "messages", {"content": texto, "message_type": "outgoing"}, "enviar la respuesta")
 
     def nota_interna(self, id_conversacion: int, texto: str) -> bool:
-        """Aviso al asesor: un mensaje privado, el cliente no lo ve."""
         cuerpo = {"content": texto, "message_type": "outgoing", "private": True}
         return self._post(id_conversacion, "messages", cuerpo, "enviar la nota interna")
 
