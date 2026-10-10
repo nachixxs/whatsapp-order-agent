@@ -448,10 +448,6 @@ def _argumentos(argv: Sequence[str] | None) -> argparse.Namespace:
     return argumentos
 
 
-def _adentro_del_repo(ruta: Path) -> bool:
-    return ruta.resolve().is_relative_to(RAIZ)
-
-
 def _destino_de_fallados(argumentos: argparse.Namespace) -> Path:
     if argumentos.guardar_fallados is not None:
         return argumentos.guardar_fallados
@@ -465,7 +461,7 @@ def _negativa(argumentos: argparse.Namespace, destino: Path) -> str | None:
     if argumentos.casos is None or not (argumentos.correr or argumentos.retomar):
         return None  # --estimar no escribe nada
     for opcion, ruta in (("--casos", argumentos.casos), ("--guardar-fallados", destino)):
-        if _adentro_del_repo(ruta):
+        if ruta.resolve().is_relative_to(RAIZ):
             return (
                 f"{opcion} apunta adentro del repo público ({ruta.resolve()}). Con --casos, los casos y sus "
                 "fallados van fuera del repo; para el set del repo, se corre sin --casos. "
