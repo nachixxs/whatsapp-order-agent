@@ -279,7 +279,7 @@ class Memoria:
         con esperar para saltear el tope. Es una fila chica por conversación."""
         with self._transaccion("contadores") as con:
             sql = "INSERT INTO contadores VALUES (?1, ?2) ON CONFLICT DO UPDATE SET mensajes = mensajes + ?2"
-            return int(con.execute(f"{sql} RETURNING mensajes", (conversacion, cuantos)).fetchall()[0][0])
+            return int(con.execute(f"{sql} RETURNING mensajes", (conversacion, cuantos)).fetchone()[0])
 
     def barrer(self, ahora: datetime) -> None:
         ahora_s = _segundos(ahora)
