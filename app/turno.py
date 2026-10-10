@@ -43,10 +43,9 @@ _SIN_TOOL_CON_ESTADO = frozenset({"argumentos_invalidos", "tool_desconocida"})
 _RESUMEN = "pedido_pendiente_confirmacion"
 _NO_SOPORTADO = "tipo_no_soportado"
 _ERRORES = frozenset({"error_interno", CONFIRMACION_FALLIDA})  # R41: con estos, ni se registra ni se pregunta
-TOPE_MENSAJE = 4096  # R35: el de WhatsApp; el historial entero vuelve a la API en cada llamada
+LARGO_MAXIMO_MENSAJE = 4096  # R35: el de WhatsApp; el historial entero vuelve a la API en cada llamada
 NO_SOPORTADO = "[adjunto no soportado]"  # R36: lo que queda en el historial del lado del cliente
-TOPE_DE_MENSAJES = 30  # mensajes del cliente por conversación de Chatwoot (decidido 2026-10-10); otra id, de cero
-_TOPE = "tope_de_mensajes"  # el motivo de la derivación; el modelo no lo puede elegir
+TOPE_DE_MENSAJES = 30  # R47: mensajes del cliente por conversación de Chatwoot; otra id, de cero
 _planilla = Planilla()  # R53: abre la hoja recién en la primera escritura
 
 
@@ -81,7 +80,7 @@ def procesar_lote(
                     nuevos.append(mensaje.id_mensaje)
                     lote.append(mensaje)
                     if mensaje.contenido.strip():  # R34: también el epígrafe de un archivo
-                        memoria.anotar_cliente(conversacion, mensaje.contenido[:TOPE_MENSAJE], ahora)
+                        memoria.anotar_cliente(conversacion, mensaje.contenido[:LARGO_MAXIMO_MENSAJE], ahora)
                     if not all(map(_de_diseno, mensaje.adjuntos)):  # R36
                         memoria.anotar_cliente(conversacion, NO_SOPORTADO, ahora)
             if not lote:
@@ -100,7 +99,7 @@ def procesar_lote(
                 if isinstance(decision, ErrorApi) and _reintentable(decision):
                     _desmarcar(memoria, nuevos)
             if topado:  # R30: ni el error ni el acuse de un archivo lo tapan
-                salida = a_un_asesor(_TOPE, config)
+                salida = a_un_asesor("tope_de_mensajes", config)  # el modelo no lo puede elegir
             else:
                 salida = _elegir(texto, archivos, lote, conversacion, config, memoria, ahora)
             if salida.motivo is not None:  # R47
