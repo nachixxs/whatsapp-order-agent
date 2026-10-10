@@ -100,15 +100,13 @@ def confirmar(conversacion: int, memoria: Memoria, planilla: Planilla, ahora: da
         return Salida(CONFIRMACION_FALLIDA, MENSAJE_ERROR_AL_GUARDAR, marcar=False, error=True)
     try:
         memoria.confirmar_escrito(conversacion, toma, ahora)
-    except Exception as error:  # R3: una fila escrita no se desdice
+    except Exception as error:  # R3: una fila escrita no se desdice  # noqa: BLE001
         logger.error("confirmacion: fila escrita sin cerrar la toma error=%s", type(error).__name__)
     # R22: la charla ya se cerró, sin marcador. R45: el nombre confirmado va al registro del contacto
     return Salida(CONFIRMADO, MENSAJE_PEDIDO_CONFIRMADO, marcar=False, nombre=toma.pedido.nombre_cliente)
 
 
-def derivada(
-    salida: Salida, charla: Charla, nombre: str | None, config: ConfigNegocio, ahora: datetime
-) -> Salida:
+def derivada(salida: Salida, charla: Charla, nombre: str | None, config: ConfigNegocio, ahora: datetime) -> Salida:
     """R47, R38: la frase de horario y la nota con el pedido como lo entendió el bot, en curso o confirmado
     (R6). El nombre es el registrado o el del pedido, nunca el teléfono."""
     pedido = charla.pedido or pedido_confirmado(charla)
@@ -129,7 +127,7 @@ def soltar_pedido_completo(conversacion: int, config: ConfigNegocio, memoria: Me
     with candado(conversacion):
         try:
             soltar_completo(conversacion, memoria, config.ahora())
-        except Exception as error:  # R52: el tipo, nunca el mensaje
+        except Exception as error:  # R52: el tipo, nunca el mensaje  # noqa: BLE001
             logger.warning("confirmacion: no se soltó el pedido error=%s", type(error).__name__)
 
 

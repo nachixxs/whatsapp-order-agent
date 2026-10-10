@@ -49,7 +49,7 @@ from tests.test_turno import (
     _Planilla,
     _registrar,
     _turno,
-    memoria,  # el fixture: pytest lo pide por nombre
+    memoria,  # el fixture: pytest lo pide por nombre  # noqa: F401
 )
 
 # R9: las columnas de §5 menos anticipo; fecha_ingreso con el reloj del negocio (HORA_DE_PRUEBA)

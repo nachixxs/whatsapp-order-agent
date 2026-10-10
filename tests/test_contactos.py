@@ -6,7 +6,6 @@ from app.contactos import (
     Plan,
     Registro,
     atributos_del_alta,
-    atributos_del_nombre,
     leer_registro,
     nombre_limpio,
     plan_primer_contacto,
@@ -57,7 +56,7 @@ def test_el_alta_se_lee_de_vuelta() -> None:
 
 def test_lo_que_la_charla_escribio_le_gana_al_payload() -> None:
     """R42, R45: un payload armado antes del alta no hace que el contacto vuelva a ser nuevo."""
-    escritos = atributos_del_alta(AHORA, preguntado=True) | atributos_del_nombre("Ana Prueba")
+    escritos = atributos_del_alta(AHORA, preguntado=True) | {"nombre_cliente": "Ana Prueba"}
 
     assert leer_registro({}, escritos) == Registro(AHORA, True, "Ana Prueba")
     assert leer_registro({"nombre_cliente": "Viejo"}, {"nombre_cliente": "Ana Prueba"}) == Registro(
@@ -200,7 +199,7 @@ def test_nuevo_bajo_una_derivacion_con_su_nombre_se_registra() -> None:
 def test_conocido_bajo_una_derivacion_igual_registra_el_nombre() -> None:
     """R42: la derivación no cambia lo del contacto ya registrado: el nombre que contesta se escribe."""
     assert _plan(PREGUNTADO, sin_pregunta=True, nombre_dicho="Ana Prueba") == Plan(
-        atributos_del_nombre("Ana Prueba"), False
+        {"nombre_cliente": "Ana Prueba"}, False
     )
 
 
@@ -215,7 +214,7 @@ def test_conocido_nunca_pregunta() -> None:
 
 def test_nombre_dicho_con_la_pregunta_viva_se_escribe() -> None:
     """R42: con la pregunta viva, el nombre que dice el cliente se escribe, sin preguntar."""
-    assert _plan(PREGUNTADO, nombre_dicho="Ana Prueba") == Plan(atributos_del_nombre("Ana Prueba"), False)
+    assert _plan(PREGUNTADO, nombre_dicho="Ana Prueba") == Plan({"nombre_cliente": "Ana Prueba"}, False)
 
 
 def test_nombre_dicho_con_la_pregunta_vencida_no_se_escribe() -> None:
@@ -245,7 +244,7 @@ def test_el_pedido_confirmado_copia_su_nombre() -> None:
     """R45: el nombre del pedido confirmado se copia a nombre_cliente si es distinto del registrado."""
     registro = Registro(AHORA - timedelta(days=3), False, "Ana Prueba")
     assert _plan(registro, nombre_confirmado="Ferretería Ejemplo") == Plan(
-        atributos_del_nombre("Ferretería Ejemplo"), False
+        {"nombre_cliente": "Ferretería Ejemplo"}, False
     )
     assert _plan(registro, nombre_confirmado="Ana Prueba") == NADA
 
@@ -253,7 +252,7 @@ def test_el_pedido_confirmado_copia_su_nombre() -> None:
 def test_el_pedido_confirmado_sin_nombre_registrado_copia_aunque_sea_el_perfil() -> None:
     """R45, R43: sin nombre registrado no hay nada que pisar: se copia el del pedido, aunque sea el del perfil."""
     registro = Registro(AHORA - timedelta(days=3), False, None)
-    assert _plan(registro, nombre_confirmado=PERFIL) == Plan(atributos_del_nombre(PERFIL), False)
+    assert _plan(registro, nombre_confirmado=PERFIL) == Plan({"nombre_cliente": PERFIL}, False)
 
 
 def test_el_pedido_confirmado_con_el_perfil_no_pisa_el_registrado() -> None:
@@ -265,7 +264,7 @@ def test_el_pedido_confirmado_con_el_perfil_no_pisa_el_registrado() -> None:
 def test_con_la_pregunta_viva_gana_el_nombre_dicho() -> None:
     """R42, R45: si en el lote dijo su nombre con la pregunta viva y confirmó, se escribe el dicho."""
     plan = _plan(PREGUNTADO, nombre_dicho="Ana Prueba", nombre_confirmado="Ferretería Ejemplo")
-    assert plan == Plan(atributos_del_nombre("Ana Prueba"), False)
+    assert plan == Plan({"nombre_cliente": "Ana Prueba"}, False)
 
 
 def test_conocido_con_error_no_escribe_el_nombre() -> None:

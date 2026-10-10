@@ -1,5 +1,6 @@
 import json
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from app.config import ConfigNegocio
 from app.tools import (

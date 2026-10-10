@@ -30,7 +30,7 @@ class Franja(_Base):
     cierra: time
 
     @model_validator(mode="after")
-    def _abre_antes_de_cerrar(self) -> "Franja":
+    def _abre_antes_de_cerrar(self) -> Franja:
         if self.abre.tzinfo is not None or self.cierra.tzinfo is not None:
             raise ValueError("la franja va en hora local, sin zona")
         if self.abre >= self.cierra:  # sin franjas que crucen la medianoche
@@ -50,7 +50,7 @@ class Horario(_Base):
     domingo: list[Franja]
 
     @model_validator(mode="after")
-    def _abre_algun_dia(self) -> "Horario":
+    def _abre_algun_dia(self) -> Horario:
         if not any(self.del_dia(dia) for dia in range(len(DIAS))):
             raise ValueError("el horario no abre ningún día")
         return self
@@ -91,7 +91,7 @@ class ConfigNegocio(_Base):
     @classmethod
     def _feriados_ordenados(cls, feriados: list[date]) -> list[date]:
         # R39: un repetido o un desorden suele ser el typo de otra fecha
-        if any(anterior >= siguiente for anterior, siguiente in zip(feriados, feriados[1:])):
+        if any(anterior >= siguiente for anterior, siguiente in zip(feriados, feriados[1:], strict=False)):
             raise ValueError("feriados desordenados o repetidos")
         return feriados
 

@@ -51,7 +51,10 @@ PROHIBIDAS = (
     r"\ben breve\b", r"\benseguida\b", r"¡listo", rf"\bya te {_CONTACTO}", rf"\b{_CONTACTO}\w* ya\b",
 )
 ZONA = ZoneInfo("America/Argentina/Buenos_Aires")
-MOTIVOS_DE_LA_NOTA = (*MOTIVOS_DERIVACION, "cambio_sobre_pedido_confirmado")  # R6
+# El tope de mensajes deriva por el mismo camino, pero lo decide el turno: no está en el enum de la tool
+MOTIVO_TOPE = "tope_de_mensajes"
+MOTIVOS_CON_TEXTO = (*MOTIVOS_DERIVACION, MOTIVO_TOPE)
+MOTIVOS_DE_LA_NOTA = (*MOTIVOS_CON_TEXTO, "cambio_sobre_pedido_confirmado")  # R6
 
 
 def _pedido(**cambios: object) -> Pedido:
@@ -80,7 +83,7 @@ def _sin_aperturas(config: ConfigNegocio) -> ConfigNegocio:
 def _con_horario(config: ConfigNegocio) -> list[str]:
     """La frase de horario detrás de cada texto que deriva: en horario, cerrado y sin apertura a la vista."""
     cerrado = HORA_DE_PRUEBA.replace(hour=20)
-    textos = [*(texto_derivacion(motivo, config) for motivo in MOTIVOS_DERIVACION),
+    textos = [*(texto_derivacion(motivo, config) for motivo in MOTIVOS_CON_TEXTO),
               MENSAJE_CAMBIO_DURANTE_LA_CONFIRMACION]
     return [
         con_frase_de_horario(texto, c, ahora)
@@ -103,7 +106,7 @@ def _todos_los_textos(config: ConfigNegocio) -> list[str]:
         *(pregunta_por_dato(dato, config) for dato in CAMPOS_DEL_PEDIDO),
         *(resumen_pedido(_pedido(tiene_diseno=estado), config) for estado in ESTADOS_DISENO),
         resumen_pedido(_pedido(material=MATERIAL_A_DEFINIR), config),
-        *(texto_derivacion(motivo, config) for motivo in MOTIVOS_DERIVACION),
+        *(texto_derivacion(motivo, config) for motivo in MOTIVOS_CON_TEXTO),
         *filter(None, (
             aviso_de_descartados([campo], _pedido(**{campo: None}), config)
             for campo in CAMPOS_DEL_PEDIDO
@@ -369,15 +372,35 @@ def test_aviso_de_material_no_nombra_materiales() -> None:
     )
 
 
-@pytest.mark.parametrize("motivo", MOTIVOS_DERIVACION)
+@pytest.mark.parametrize("motivo", MOTIVOS_CON_TEXTO)
 def test_cada_motivo_tiene_su_texto_con_asesor(motivo: str, config: ConfigNegocio) -> None:
-    """R19: cada motivo de derivar_a_asesor tiene su texto y nombra al asesor."""
+    """R19: cada motivo de derivar_a_asesor, y el tope de mensajes, tiene su texto y nombra al asesor."""
     assert "asesor" in texto_derivacion(motivo, config)
 
 
 def test_los_motivos_tienen_textos_distintos(config: ConfigNegocio) -> None:
-    textos = {texto_derivacion(motivo, config) for motivo in MOTIVOS_DERIVACION}
-    assert len(textos) == len(MOTIVOS_DERIVACION)
+    textos = {texto_derivacion(motivo, config) for motivo in MOTIVOS_CON_TEXTO}
+    assert len(textos) == len(MOTIVOS_CON_TEXTO)
+
+
+def test_el_tope_deriva_tuteando_sin_nombrar_el_limite_ni_prometer_inmediatez(config: ConfigNegocio) -> None:
+    """R19, R38: el modelo no lo elige; el texto tutea, no dice que hay un límite y la hora la pone la frase."""
+    texto = texto_derivacion(MOTIVO_TOPE, config)
+    assert MOTIVO_TOPE not in MOTIVOS_DERIVACION
+    assert texto == "Para seguir con lo que necesitás, te paso con un asesor."
+    for delator in ("tope", "límite", "limite", "mensajes", "cort", "máximo", "ya ", "ahora", "breve", "enseguida"):
+        assert delator not in texto.casefold(), delator
+    assert con_frase_de_horario(texto, config, HORA_DE_PRUEBA) == (
+        f"{texto} Ya le paso tu consulta así te contesta por acá."
+    )
+
+
+def test_la_nota_del_tope_dice_el_motivo_en_claro(config: ConfigNegocio) -> None:
+    """R47: el asesor lee que la conversación llegó al tope de mensajes y que el bot ya no contesta."""
+    assert nota_de_derivacion(MOTIVO_TOPE, None, "Ana", config) == (
+        "Derivación del bot: La conversación llegó al tope de mensajes del cliente y el bot no sigue contestando.\n"
+        "Nombre: Ana"
+    )
 
 
 def test_sin_stock_no_ofrece_alternativas(config: ConfigNegocio) -> None:

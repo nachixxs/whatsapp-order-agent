@@ -10,8 +10,7 @@ CAMPOS_DEL_PEDIDO: tuple[str, ...] = (
 )
 ESTADOS_DISENO: tuple[str, ...] = ("si", "no", "requiere_servicio")
 TEMAS_CONSULTA: tuple[str, ...] = (
-    "direccion", "horarios", "envios", "estacionamiento",
-    "presupuestos", "medios_pago", "envio_archivos", "catalogo",
+    "direccion", "horarios", "envios", "estacionamiento", "presupuestos", "medios_pago", "envio_archivos", "catalogo",
 )
 MOTIVOS_DERIVACION: tuple[str, ...] = ("sin_stock", "lo_pide_el_cliente", "fuera_de_alcance", "plazo_o_precio")
 MATERIAL_A_DEFINIR = "a definir con el asesor"  # R15
@@ -28,10 +27,7 @@ def _tool(nombre: str, descripcion: str, propiedades: dict[str, Any]) -> dict[st
         "name": nombre,
         "description": descripcion,
         "input_schema": {
-            "type": "object",
-            "properties": propiedades,
-            "required": list(propiedades),
-            "additionalProperties": False,
+            "type": "object", "properties": propiedades, "required": list(propiedades), "additionalProperties": False,
         },
         "strict": True,  # R11
     }
@@ -74,12 +70,8 @@ def _registrar_pedido(config: ConfigNegocio) -> dict[str, Any]:
                 "les queda, no va acá: es "
                 "derivar_a_asesor con sin_stock.",
             ),
-            "medidas": _nulable(
-                texto, "Medidas de la pieza, tal cual las dijo. Por ejemplo '9x5 cm'."
-            ),
-            "cantidad": _nulable(
-                {"type": "integer"}, "Cuántas unidades quiere. Entero positivo."
-            ),
+            "medidas": _nulable(texto, "Medidas de la pieza, tal cual las dijo. Por ejemplo '9x5 cm'."),
+            "cantidad": _nulable({"type": "integer"}, "Cuántas unidades quiere. Entero positivo."),
             "fecha_necesita": _nulable(
                 texto,
                 "Fecha en la que el cliente necesita el trabajo, en "
@@ -158,11 +150,6 @@ def definir_tools(config: ConfigNegocio) -> list[dict[str, Any]]:
             "Registra la respuesta del cliente al resumen del pedido. "
             "acepta=true solo si acepta el resumen tal cual está. Si acepta "
             "pero pide cambiar algo, o si rechaza, es acepta=false.",
-            {
-                "acepta": {
-                    "type": "boolean",
-                    "description": "true si da el OK al resumen tal cual; false si no.",
-                }
-            },
+            {"acepta": {"type": "boolean", "description": "true si da el OK al resumen tal cual; false si no."}},
         ),
     ]

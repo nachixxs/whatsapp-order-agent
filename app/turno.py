@@ -7,21 +7,13 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 
 from app import agente
-from app.agente import (
-    ConsultaGeneral,
-    Decision,
-    DerivarAAsesor,
-    ErrorApi,
-    PedirDatoFaltante,
-    RegistrarPedido,
-    SinTool,
-)
+from app.agente import ConsultaGeneral, Decision, DerivarAAsesor, ErrorApi, PedirDatoFaltante, RegistrarPedido, SinTool
 from app.chatwoot import Adjunto, ClienteChatwoot, Contacto, MensajeEntrante
+from app.config import ConfigNegocio
 from app.confirmacion import (
     CONFIRMADO, ESCRIBIR, Salida, a_un_asesor, candado, carrera, confirmar, derivada, pedido_confirmado,
     respuesta_al_resumen, soltar_completo,
 )
-from app.config import ConfigNegocio
 from app.contactos import Registro, leer_registro, nombre_del_perfil, plan_primer_contacto, pregunta_viva
 from app.formato import alias_conversacion, para_log
 from app.memoria import CONFIRMACION_FALLIDA, Charla, ErrorMemoria, Memoria
@@ -51,8 +43,9 @@ _SIN_TOOL_CON_ESTADO = frozenset({"argumentos_invalidos", "tool_desconocida"})
 _RESUMEN = "pedido_pendiente_confirmacion"
 _NO_SOPORTADO = "tipo_no_soportado"
 _ERRORES = frozenset({"error_interno", CONFIRMACION_FALLIDA})  # R41: con estos, ni se registra ni se pregunta
-TOPE_MENSAJE = 4096  # R35: el de WhatsApp; el historial entero vuelve a la API en cada llamada
+LARGO_MAXIMO_MENSAJE = 4096  # R35: el de WhatsApp; el historial entero vuelve a la API en cada llamada
 NO_SOPORTADO = "[adjunto no soportado]"  # R36: lo que queda en el historial del lado del cliente
+TOPE_DE_MENSAJES = 30  # R47: mensajes del cliente por conversación de Chatwoot; otra id, de cero
 _planilla = Planilla()  # R53: abre la hoja recién en la primera escritura
 
 
@@ -64,13 +57,9 @@ class Resultado:  # R47: lo que sale de un lote, en este orden: la respuesta, la
 
 
 def procesar_lote(
-    conversacion: int,
-    mensajes: Sequence[MensajeEntrante],
-    config: ConfigNegocio,
-    memoria: Memoria,
-    decidir: Decidir = agente.decidir,
-    planilla: Planilla = _planilla,
-    actualizar_contacto: Callable[[int, dict[str, object]], bool] = ClienteChatwoot().actualizar_contacto,
+    conversacion: int, mensajes: Sequence[MensajeEntrante], config: ConfigNegocio, memoria: Memoria,
+    decidir: Decidir = agente.decidir, planilla: Planilla = _planilla,
+    actualizar_contacto: Callable[[int, dict[str, object]], bool] = ClienteChatwoot().actualizar_contacto,  # noqa: B008 (un solo cliente por proceso, con credenciales perezosas R53)
 ) -> Resultado:
     """Nunca lanza: ante un error, el error interno, sin nota ni pase (R24). Un lote, una respuesta (R30)."""
     alias = alias_conversacion(conversacion)
@@ -91,21 +80,28 @@ def procesar_lote(
                     nuevos.append(mensaje.id_mensaje)
                     lote.append(mensaje)
                     if mensaje.contenido.strip():  # R34: también el epígrafe de un archivo
-                        memoria.anotar_cliente(conversacion, mensaje.contenido[:TOPE_MENSAJE], ahora)
+                        memoria.anotar_cliente(conversacion, mensaje.contenido[:LARGO_MAXIMO_MENSAJE], ahora)
                     if not all(map(_de_diseno, mensaje.adjuntos)):  # R36
                         memoria.anotar_cliente(conversacion, NO_SOPORTADO, ahora)
             if not lote:
                 logger.info("turno: sin mensajes nuevos alias=%s", alias)
                 return Resultado(None)
+            # §3: un archivo sin epígrafe no va a la API ni cuenta para el techo del gasto (R35: hasta 60 archivos).
+            # Pasado el tope no se llama a la API: se deriva como cualquier otro motivo (R47)
+            al_modelo = sum(bool(mensaje.contenido.strip() or not mensaje.adjuntos) for mensaje in lote)
+            topado = memoria.contar_mensajes(conversacion, al_modelo) > TOPE_DE_MENSAJES
             contacto = mensajes[-1].contacto
             registro = leer_registro(contacto.atributos, memoria.leer_charla(conversacion, ahora).atributos)
             archivos = _sumar_archivos(conversacion, lote, contacto.telefono, config, memoria, ahora)
             texto = None
-            if any(mensaje.contenido.strip() or not mensaje.adjuntos for mensaje in lote):  # §3
+            if al_modelo and not topado:
                 decision, texto = _turno(conversacion, contacto, registro, config, memoria, decidir, planilla, ahora)
                 if isinstance(decision, ErrorApi) and _reintentable(decision):
                     _desmarcar(memoria, nuevos)
-            salida = _elegir(texto, archivos, lote, conversacion, config, memoria, ahora)
+            if topado:  # R30: ni el error ni el acuse de un archivo lo tapan
+                salida = a_un_asesor("tope_de_mensajes", config)  # el modelo no lo puede elegir
+            else:
+                salida = _elegir(texto, archivos, lote, conversacion, config, memoria, ahora)
             if salida.motivo is not None:  # R47
                 charla = soltar_completo(conversacion, memoria, ahora)
                 salida = derivada(salida, charla, registro and registro.nombre_cliente, config, ahora)
@@ -130,7 +126,7 @@ def procesar_lote(
             if salida.motivo is not None:  # R47: con la hora del pase, lo más tarde posible dentro del candado
                 with suppress(ErrorMemoria):  # la memoria ya dejó su log; el pase sale igual
                     memoria.anotar_derivacion(conversacion, config.ahora())
-        except Exception as error:  # R23, R24: el proceso falló; se desmarca y el cliente recibe el error
+        except Exception as error:  # R23, R24: el proceso falló; se desmarca y el cliente recibe el error  # noqa: BLE001
             # Sin marcador: no se sabe en qué quedó la memoria. R52: el tipo, nunca el mensaje del error
             logger.error("turno: fallo alias=%s error=%s", alias, type(error).__name__)
             _desmarcar(memoria, nuevos)
@@ -147,8 +143,7 @@ def _sumar_archivos(
     """R29: los archivos van al pedido en curso antes del modelo. Devuelve un error o el acuse de R32;
     None deja el acuse para cuando el texto del lote ya se aplicó (R31)."""
     adjuntos = [(mensaje, adjunto) for mensaje in lote for adjunto in mensaje.adjuntos]
-    archivos = [_archivo(mensaje, adjunto, config, ahora) for mensaje, adjunto in adjuntos
-                if _de_diseno(adjunto)]
+    archivos = [_archivo(mensaje, adjunto, config, ahora) for mensaje, adjunto in adjuntos if _de_diseno(adjunto)]
     no_soportado = Salida(_NO_SOPORTADO, MENSAJE_TIPO_NO_SOPORTADO, error=True)  # R36: nunca silencio
     error = no_soportado if len(archivos) < len(adjuntos) else None
     if not archivos:
@@ -174,9 +169,7 @@ def _de_diseno(adjunto: Adjunto) -> bool:  # R29: la imagen y el documento, como
     return adjunto.tipo == "file" or adjunto.tipo == "image" and adjunto.extension != "webp"  # R36: sticker
 
 
-def _archivo(
-    mensaje: MensajeEntrante, adjunto: Adjunto, config: ConfigNegocio, ahora: datetime
-) -> ArchivoAdjunto:
+def _archivo(mensaje: MensajeEntrante, adjunto: Adjunto, config: ConfigNegocio, ahora: datetime) -> ArchivoAdjunto:
     hora = (mensaje.creado or ahora).astimezone(config.zona).replace(tzinfo=None)  # R29: hora de pared
     return ArchivoAdjunto(
         id_adjunto=adjunto.id, id_mensaje=mensaje.id_mensaje, tipo=adjunto.extension or adjunto.tipo,
@@ -223,9 +216,7 @@ def _turno(
     salida = salida or _aplicar(decision, charla, contacto.telefono, registrado, config, ahora)
     if salida is ESCRIBIR:
         salida = confirmar(conversacion, memoria, planilla, ahora)
-    if salida.pedido is not None and not memoria.guardar_pedido(
-        conversacion, salida.pedido, charla.generacion, ahora
-    ):
+    if salida.pedido is not None and not memoria.guardar_pedido(conversacion, salida.pedido, charla.generacion, ahora):
         # R5: otro mensaje tomó el pedido mientras el modelo decidía. Con el candado (R28) no pasa dentro
         # de un proceso; si pasara, como R6 sin cambios: ni texto ni turno del bot
         salida = Salida("generacion_cambiada", None, marcar=False)
@@ -257,9 +248,7 @@ def _aplicar(
     return respuesta_al_resumen(argumentos, charla.pedido)
 
 
-def _registrar(
-    argumentos: RegistrarPedido, base: Pedido, config: ConfigNegocio, ahora: datetime
-) -> Salida:
+def _registrar(argumentos: RegistrarPedido, base: Pedido, config: ConfigNegocio, ahora: datetime) -> Salida:
     """R14: suma campo por campo; contesta el aviso de lo descartado, el resumen o la repregunta."""
     pedido, descartados = sumar_campos(base, argumentos.model_dump(), config, ahora)
     aviso = aviso_de_descartados(descartados, pedido, config)

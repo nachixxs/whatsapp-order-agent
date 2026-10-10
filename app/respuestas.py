@@ -15,8 +15,7 @@ MENSAJE_NO_ENTENDIDO = "Perdón, no te entendí bien. ¿Me lo contás de nuevo?"
 MENSAJE_ERROR_INTERNO = "Uf, se me complicó procesar tu mensaje. ¿Me lo escribís de nuevo en un rato?"
 # R8: acepta=false vuelve a recolectar sin perder lo que ya dio
 MENSAJE_PEDIDO_RECHAZADO = "Dale, no lo guardo así. Decime qué querés cambiar y lo corrijo."
-# R15: va delante de la repregunta o del resumen del turno que dejó el material a definir.
-# No nombra ningún material
+# R15: va delante de la repregunta o del resumen del turno que dejó el material a definir. No nombra ningún material
 AVISO_MATERIAL_A_DEFINIR = "El material lo confirma un asesor cuando cotiza, así que lo dejamos a definir."
 # R2: sale solo con la fila escrita. Es el único texto con "¡Listo!"
 MENSAJE_PEDIDO_CONFIRMADO = (
@@ -49,9 +48,7 @@ _PREGUNTAS: dict[str, str] = {
 }
 
 _DISENO_EN_EL_RESUMEN: dict[str, str] = {
-    "si": "ya lo tenés",
-    "no": "todavía no lo tenés",
-    "requiere_servicio": "lo diseñamos nosotros",
+    "si": "ya lo tenés", "no": "todavía no lo tenés", "requiere_servicio": "lo diseñamos nosotros",
 }
 _DISENO_PARA_EL_ASESOR = {"si": "lo tiene", "no": "no lo tiene", "requiere_servicio": "lo diseñamos nosotros"}
 
@@ -61,6 +58,7 @@ _MOTIVO_EN_TEXTO: dict[str, str] = {
     "lo_pide_el_cliente": "Dale, te paso con un asesor.",
     "fuera_de_alcance": "Esto prefiero que te lo conteste un asesor.",
     "plazo_o_precio": "El precio y el plazo te los confirma un asesor, no te los puedo dar yo.",
+    "tope_de_mensajes": "Para seguir con lo que necesitás, te paso con un asesor.",  # no nombra el tope
 }
 # R47: lo lee el asesor. R6: el cambio durante la confirmación también deriva
 _MOTIVO_PARA_EL_ASESOR: dict[str, str] = {
@@ -68,13 +66,13 @@ _MOTIVO_PARA_EL_ASESOR: dict[str, str] = {
     "lo_pide_el_cliente": "Pidió hablar con una persona",
     "fuera_de_alcance": "Una consulta que el bot no resuelve",
     "plazo_o_precio": "Pregunta por precio o plazo",
-    "cambio_sobre_pedido_confirmado": (
-        "Pidió un cambio o una cancelación sobre un pedido que se estaba confirmando"
-    ),
+    "cambio_sobre_pedido_confirmado": "Pidió un cambio o una cancelación sobre un pedido que se estaba confirmando",
+    "tope_de_mensajes": "La conversación llegó al tope de mensajes del cliente y el bot no sigue contestando",
 }
 SIN_NOMBRE = "sin nombre registrado"
 PREGUNTA_DEL_NOMBRE = "¿Cómo es tu nombre? Así te agendamos."  # R44
-_SINTAXIS_DE_CHATWOOT = re.compile(r"[\[\]()<>]|mention://", re.IGNORECASE)  # R47: links y menciones; los C* salen aparte
+# R47: links y menciones; los C* salen aparte
+_SINTAXIS_DE_CHATWOOT = re.compile(r"[\[\]()<>]|mention://", re.IGNORECASE)
 
 
 def listar(items: Sequence[str], conector: str = "o") -> str:
@@ -161,13 +159,9 @@ def pregunta_por_dato(dato: str, config: ConfigNegocio) -> str:
     return _PREGUNTAS.get(dato, MENSAJE_NO_ENTENDIDO)
 
 
-def aviso_de_descartados(
-    descartados: Sequence[str], pedido: Pedido, config: ConfigNegocio
-) -> str | None:
+def aviso_de_descartados(descartados: Sequence[str], pedido: Pedido, config: ConfigNegocio) -> str | None:
     """R14: con los descartados de sumar_campos, el texto que va en lugar de la repregunta o del resumen.
-
-    None: sigue el flujo normal. El nombre descartado no se avisa: el pedido queda sin él y se repregunta.
-    """
+    None: sigue el flujo normal. El nombre descartado no se avisa: el pedido queda sin él y se repregunta."""
     if "producto" in descartados:
         return f"Eso no lo tengo en la lista. Hacemos {_familias(config)}. ¿Cuál de esos necesitás?"
     # Si ya tenía una fecha válida, el reenvío mal resuelto se ignora y la charla sigue

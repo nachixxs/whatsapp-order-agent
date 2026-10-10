@@ -80,9 +80,7 @@ def _adjunto(crudo: object) -> Adjunto | None:
     if id_adjunto is None:
         return None
     return Adjunto(
-        id=id_adjunto,
-        tipo=_texto(datos.get("file_type")),
-        extension=_texto(datos.get("extension")) or None,
+        id=id_adjunto, tipo=_texto(datos.get("file_type")), extension=_texto(datos.get("extension")) or None,
         tamano=_entero(datos.get("file_size")),
     )
 
@@ -104,18 +102,13 @@ def _armar_mensaje(crudo: dict[str, Any]) -> MensajeEntrante:
     adjuntos = crudo.get("attachments")
     adjuntos = adjuntos if isinstance(adjuntos, list) else []
     return MensajeEntrante(
-        evento=_texto(crudo.get("event")) or "message_created",
-        id_mensaje=_entero(crudo.get("id")),
-        contenido=_texto(crudo.get("content")),
-        adjuntos=[a for a in map(_adjunto, adjuntos) if a is not None],
-        creado=_creado(crudo.get("created_at")),
-        id_conversacion=_entero(conversacion.get("id")),
-        account_id=_entero(account.get("id")),
-        inbox_id=_entero(inbox.get("id")),
+        evento=_texto(crudo.get("event")) or "message_created", id_mensaje=_entero(crudo.get("id")),
+        contenido=_texto(crudo.get("content")), adjuntos=[a for a in map(_adjunto, adjuntos) if a is not None],
+        creado=_creado(crudo.get("created_at")), id_conversacion=_entero(conversacion.get("id")),
+        account_id=_entero(account.get("id")), inbox_id=_entero(inbox.get("id")),
         estado_conversacion=_texto(conversacion.get("status")) or None,
         contacto=Contacto(
-            nombre=_texto(sender.get("name")) or None,
-            telefono=_texto(sender.get("phone_number")) or None,
+            nombre=_texto(sender.get("name")) or None, telefono=_texto(sender.get("phone_number")) or None,
             id=_entero(sender.get("id")),
             atributos=sender.get("custom_attributes") if isinstance(sender.get("custom_attributes"), dict) else None,
         ),
@@ -125,7 +118,7 @@ def _armar_mensaje(crudo: dict[str, Any]) -> MensajeEntrante:
 def _cargar(cuerpo: bytes) -> dict[str, Any] | None:
     try:
         crudo = json.loads(cuerpo)
-    except Exception:  # R51: JSON invalido, anidado (RecursionError) o bytes raros
+    except Exception:  # R51: JSON invalido, anidado (RecursionError) o bytes raros  # noqa: BLE001
         return None
     return crudo if isinstance(crudo, dict) else None
 
@@ -137,7 +130,7 @@ def parsear_evento(cuerpo: bytes) -> MensajeEntrante | None:
         return None
     try:
         return None if _booleano(crudo.get("private")) else _armar_mensaje(crudo)
-    except Exception:  # R51: un campo con un tipo inesperado no tumba el parseo
+    except Exception:  # R51: un campo con un tipo inesperado no tumba el parseo  # noqa: BLE001
         return None
 
 
@@ -149,7 +142,7 @@ def parsear_estado(cuerpo: bytes) -> MensajeEntrante | None:
         crudo = {**crudo, "conversation": crudo, "inbox": {"id": crudo.get("inbox_id")}}
     try:
         return None if crudo is None else _armar_mensaje(crudo)
-    except Exception:  # R51
+    except Exception:  # R51  # noqa: BLE001
         return None
 
 
@@ -159,7 +152,8 @@ class ClienteChatwoot:
     def __init__(self, cliente_http: httpx.Client | None = None) -> None:
         self._cliente_http = cliente_http
 
-    def _pedir(self, metodo: str, ruta: str, cuerpo: dict[str, Any], token_env: str, timeout: float, accion: str) -> bool:
+    def _pedir(self, metodo: str, ruta: str, cuerpo: dict[str, Any], token_env: str, timeout: float,
+               accion: str) -> bool:
         """`ruta` cuelga de la cuenta. True solo con 2xx; nunca lanza (R53)."""
         base_url = os.environ.get("CHATWOOT_URL", "")
         account_id = os.environ.get("CHATWOOT_ACCOUNT_ID", "")
@@ -171,9 +165,10 @@ class ClienteChatwoot:
         propio = self._cliente_http is None
         cliente = self._cliente_http or httpx.Client()
         try:
-            cliente.request(metodo, url, json=cuerpo, headers={"api_access_token": token}, timeout=timeout).raise_for_status()
+            cabeceras = {"api_access_token": token}
+            cliente.request(metodo, url, json=cuerpo, headers=cabeceras, timeout=timeout).raise_for_status()
             return True
-        except Exception:  # R53: un fallo de red no expone el token ni tumba el turno; nunca el texto ni el error
+        except Exception:  # R53: un fallo de red no expone el token ni tumba el turno; nunca el texto ni el error  # noqa: BLE001
             logger.error("Chatwoot: fallo al %s", accion)
             return False
         finally:
@@ -186,17 +181,16 @@ class ClienteChatwoot:
 
     def actualizar_contacto(self, id_contacto: int, atributos: dict[str, Any]) -> bool:
         """R45: escribe custom_attributes del contacto (Chatwoot los mezcla). Token de agente: el del bot no puede.
-
-        Tope de 5 s y sin reintento: si falla, el turno sigue (R41).
-        """
+        Tope de 5 s y sin reintento: si falla, el turno sigue (R41)."""
         cuerpo = {"custom_attributes": atributos}
-        return self._pedir("PUT", f"contacts/{id_contacto}", cuerpo, "CHATWOOT_AGENTE_TOKEN", TIMEOUT_CONTACTO_SEGUNDOS, "actualizar el contacto")
+        return self._pedir("PUT", f"contacts/{id_contacto}", cuerpo, "CHATWOOT_AGENTE_TOKEN", TIMEOUT_CONTACTO_SEGUNDOS,
+                           "actualizar el contacto")
 
     def responder(self, id_conversacion: int, texto: str) -> bool:
-        return self._post(id_conversacion, "messages", {"content": texto, "message_type": "outgoing"}, "enviar la respuesta")
+        cuerpo = {"content": texto, "message_type": "outgoing"}
+        return self._post(id_conversacion, "messages", cuerpo, "enviar la respuesta")
 
     def nota_interna(self, id_conversacion: int, texto: str) -> bool:
-        """Aviso al asesor: un mensaje privado, el cliente no lo ve."""
         cuerpo = {"content": texto, "message_type": "outgoing", "private": True}
         return self._post(id_conversacion, "messages", cuerpo, "enviar la nota interna")
 

@@ -56,7 +56,7 @@ def _abrir_hoja() -> gspread.Worksheet:
 def _rango(respuesta: Any) -> str:
     try:
         return para_log(respuesta["updates"]["updatedRange"])
-    except Exception:  # R3: la fila ya está escrita; una respuesta con otra forma no la desdice
+    except Exception:  # R3: la fila ya está escrita; una respuesta con otra forma no la desdice  # noqa: BLE001
         return RANGO_DESCONOCIDO
 
 
@@ -78,7 +78,7 @@ class Planilla:
         except ErrorPlanilla as error:
             logger.error("planilla: %s", error)  # mensaje fijo
             raise
-        except Exception as error:  # R2: cualquier falla de la credencial, la red o la API
+        except Exception as error:  # R2: cualquier falla de la credencial, la red o la API  # noqa: BLE001
             tipo = type(error).__name__
         else:
             logger.info("planilla: fila escrita rango=%s", _rango(respuesta))

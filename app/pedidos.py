@@ -45,9 +45,7 @@ class Pedido(BaseModel):
     """Las columnas de la planilla (SPECS §5) que no completa Python al escribir la fila."""
 
     # R52: un error de validación no lleva el valor (R26 lo loguea al leer de SQLite)
-    model_config = ConfigDict(
-        extra="forbid", str_strip_whitespace=True, hide_input_in_errors=True
-    )
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, hide_input_in_errors=True)
 
     nombre_cliente: Texto | None = None
     telefono: Texto  # R13: del contacto de Chatwoot, nunca del modelo
@@ -110,9 +108,7 @@ def sumar_campos(
     return pedido, descartados
 
 
-def _con_campo(
-    pedido: Pedido, campo: str, valor: object, catalogo: set[str], hoy: date
-) -> Pedido:
+def _con_campo(pedido: Pedido, campo: str, valor: object, catalogo: set[str], hoy: date) -> Pedido:
     if campo not in CAMPOS_DEL_PEDIDO:  # R13: el teléfono no lo llena el modelo
         raise ValueError("campo que no llena el modelo")
     nuevo = Pedido.model_validate(pedido.model_dump() | {campo: valor})

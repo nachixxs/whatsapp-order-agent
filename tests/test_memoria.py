@@ -610,6 +610,26 @@ def test_las_generaciones_se_retienen_30_dias(memoria: Memoria) -> None:
     assert memoria.leer_charla(CONV, T0).generacion == 0
 
 
+# Tope de mensajes del cliente por conversación (CP5, 5.4)
+
+
+def test_el_contador_suma_el_lote_entero_por_conversacion(memoria: Memoria) -> None:
+    """Un lote de varios mensajes suma todos de una vez; otra conversación lleva su propia cuenta."""
+    assert memoria.contar_mensajes(CONV, 3) == 3
+    assert memoria.contar_mensajes(CONV, 2) == 5
+    assert memoria.contar_mensajes(CONV, 0) == 5
+    assert memoria.contar_mensajes(CONV + 1, 1) == 1
+
+
+def test_el_barrido_no_reinicia_el_contador(memoria: Memoria) -> None:
+    """Si el TTL lo borrara, alcanzaría con esperar para saltear el tope."""
+    memoria.contar_mensajes(CONV, 30)
+
+    memoria.barrer(T0 + RETENCION_GENERACIONES + RETENCION_PROCESADOS)
+
+    assert memoria.contar_mensajes(CONV, 1) == 31
+
+
 # Reglas de otras secciones que pasan por la memoria
 
 

@@ -70,11 +70,8 @@ class ConfirmarPedido(_Argumentos):
 
 Argumentos = RegistrarPedido | PedirDatoFaltante | ConsultaGeneral | DerivarAAsesor | ConfirmarPedido
 ARGUMENTOS_POR_TOOL: dict[str, type[Argumentos]] = {
-    "registrar_pedido": RegistrarPedido,
-    "pedir_dato_faltante": PedirDatoFaltante,
-    "consulta_general": ConsultaGeneral,
-    "derivar_a_asesor": DerivarAAsesor,
-    "confirmar_pedido": ConfirmarPedido,
+    "registrar_pedido": RegistrarPedido, "pedir_dato_faltante": PedirDatoFaltante, "consulta_general": ConsultaGeneral,
+    "derivar_a_asesor": DerivarAAsesor, "confirmar_pedido": ConfirmarPedido,
 }
 
 
@@ -201,8 +198,7 @@ def _loguear(alias: str, respuesta: Message, resultado: Decision | SinTool) -> N
     texto = "alias=%s tool=%s claves=%s stop_reason=%s entrada=%d salida=%d cache_escrita=%d cache_leida=%d"
     datos = (
         alias, para_log(bloque.name) if bloque else "-", _claves(bloque), para_log(respuesta.stop_reason),
-        uso.input_tokens, uso.output_tokens,
-        uso.cache_creation_input_tokens or 0, uso.cache_read_input_tokens or 0,
+        uso.input_tokens, uso.output_tokens, uso.cache_creation_input_tokens or 0, uso.cache_read_input_tokens or 0,
     )
     if isinstance(resultado, SinTool):
         logger.warning("agente: sin_tool motivo=%s " + texto, resultado.motivo, *datos)
@@ -231,8 +227,7 @@ def decidir(
         return ErrorApi("credencial")
     except anthropic.AnthropicError as error:  # R12: ningún error del SDK llega al webhook
         fallo = _error_tipado(error)
-        estado = fallo.estado_http or "-"
-        logger.error("agente: error de API tipo=%s estado=%s alias=%s", fallo.tipo, estado, alias)
+        logger.error("agente: error de API tipo=%s estado=%s alias=%s", fallo.tipo, fallo.estado_http or "-", alias)
         return fallo
     resultado = leer_respuesta(respuesta)
     _loguear(alias, respuesta, resultado)
