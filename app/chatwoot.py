@@ -152,7 +152,8 @@ class ClienteChatwoot:
     def __init__(self, cliente_http: httpx.Client | None = None) -> None:
         self._cliente_http = cliente_http
 
-    def _pedir(self, metodo: str, ruta: str, cuerpo: dict[str, Any], token_env: str, timeout: float, accion: str) -> bool:  # noqa: E501 (techo de líneas de app/)
+    def _pedir(self, metodo: str, ruta: str, cuerpo: dict[str, Any], token_env: str, timeout: float,
+               accion: str) -> bool:
         """`ruta` cuelga de la cuenta. True solo con 2xx; nunca lanza (R53)."""
         base_url = os.environ.get("CHATWOOT_URL", "")
         account_id = os.environ.get("CHATWOOT_ACCOUNT_ID", "")
@@ -164,7 +165,8 @@ class ClienteChatwoot:
         propio = self._cliente_http is None
         cliente = self._cliente_http or httpx.Client()
         try:
-            cliente.request(metodo, url, json=cuerpo, headers={"api_access_token": token}, timeout=timeout).raise_for_status()  # noqa: E501 (techo de líneas de app/)
+            cabeceras = {"api_access_token": token}
+            cliente.request(metodo, url, json=cuerpo, headers=cabeceras, timeout=timeout).raise_for_status()
             return True
         except Exception:  # R53: un fallo de red no expone el token ni tumba el turno; nunca el texto ni el error  # noqa: BLE001
             logger.error("Chatwoot: fallo al %s", accion)
@@ -181,10 +183,12 @@ class ClienteChatwoot:
         """R45: escribe custom_attributes del contacto (Chatwoot los mezcla). Token de agente: el del bot no puede.
         Tope de 5 s y sin reintento: si falla, el turno sigue (R41)."""
         cuerpo = {"custom_attributes": atributos}
-        return self._pedir("PUT", f"contacts/{id_contacto}", cuerpo, "CHATWOOT_AGENTE_TOKEN", TIMEOUT_CONTACTO_SEGUNDOS, "actualizar el contacto")  # noqa: E501 (techo de líneas de app/)
+        return self._pedir("PUT", f"contacts/{id_contacto}", cuerpo, "CHATWOOT_AGENTE_TOKEN", TIMEOUT_CONTACTO_SEGUNDOS,
+                           "actualizar el contacto")
 
     def responder(self, id_conversacion: int, texto: str) -> bool:
-        return self._post(id_conversacion, "messages", {"content": texto, "message_type": "outgoing"}, "enviar la respuesta")  # noqa: E501 (techo de líneas de app/)
+        cuerpo = {"content": texto, "message_type": "outgoing"}
+        return self._post(id_conversacion, "messages", cuerpo, "enviar la respuesta")
 
     def nota_interna(self, id_conversacion: int, texto: str) -> bool:
         cuerpo = {"content": texto, "message_type": "outgoing", "private": True}
