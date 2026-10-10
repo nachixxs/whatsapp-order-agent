@@ -388,7 +388,6 @@ def test_el_tope_deriva_tuteando_sin_nombrar_el_limite_ni_prometer_inmediatez(co
     texto = texto_derivacion(MOTIVO_TOPE, config)
     assert MOTIVO_TOPE not in MOTIVOS_DERIVACION
     assert texto == "Para seguir con lo que necesitás, te paso con un asesor."
-    assert re.search(r"\bte paso\b", texto) and "necesitás" in texto  # tuteo
     for delator in ("tope", "límite", "limite", "mensajes", "cort", "máximo", "ya ", "ahora", "breve", "enseguida"):
         assert delator not in texto.casefold(), delator
     assert con_frase_de_horario(texto, config, HORA_DE_PRUEBA) == (
