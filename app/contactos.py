@@ -59,11 +59,7 @@ def atributos_del_alta(ahora: datetime, *, preguntado: bool, nombre: str | None 
     if ahora.utcoffset() is None:  # R37: una hora sin zona se leería como la del servidor
         raise ValueError("hora sin zona: usar config.ahora()")
     alta = {"primer_contacto": ahora.isoformat(), "nombre_preguntado": preguntado}
-    return alta | (atributos_del_nombre(nombre) if nombre else {})
-
-
-def atributos_del_nombre(nombre: str) -> dict[str, object]:
-    return {"nombre_cliente": nombre}
+    return alta | ({"nombre_cliente": nombre} if nombre else {})
 
 
 def pregunta_viva(registro: Registro | None, ahora: datetime) -> bool:
@@ -98,4 +94,4 @@ def plan_primer_contacto(
         nombre = nombre_confirmado
     if not nombre or _mismo(nombre, registro.nombre_cliente):
         return Plan(None, False)
-    return Plan(atributos_del_nombre(nombre), False)
+    return Plan({"nombre_cliente": nombre}, False)

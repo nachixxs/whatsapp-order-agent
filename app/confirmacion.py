@@ -106,9 +106,7 @@ def confirmar(conversacion: int, memoria: Memoria, planilla: Planilla, ahora: da
     return Salida(CONFIRMADO, MENSAJE_PEDIDO_CONFIRMADO, marcar=False, nombre=toma.pedido.nombre_cliente)
 
 
-def derivada(
-    salida: Salida, charla: Charla, nombre: str | None, config: ConfigNegocio, ahora: datetime
-) -> Salida:
+def derivada(salida: Salida, charla: Charla, nombre: str | None, config: ConfigNegocio, ahora: datetime) -> Salida:
     """R47, R38: la frase de horario y la nota con el pedido como lo entendió el bot, en curso o confirmado
     (R6). El nombre es el registrado o el del pedido, nunca el teléfono."""
     pedido = charla.pedido or pedido_confirmado(charla)

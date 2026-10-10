@@ -203,9 +203,7 @@ class Memoria:
             charla = _leer(con, conversacion, ahora_s)
             _escribir(con, conversacion, charla.model_copy(update={"derivada": ahora}), ahora_s)
 
-    def guardar_pedido(
-        self, conversacion: int, pedido: Pedido | None, generacion: int, ahora: datetime
-    ) -> bool:
+    def guardar_pedido(self, conversacion: int, pedido: Pedido | None, generacion: int, ahora: datetime) -> bool:
         """False, sin tocar nada, si la generación cambió desde que se leyó la charla (R5)."""
         ahora_s = _segundos(ahora)
         with self._transaccion("charlas") as con:
@@ -228,8 +226,7 @@ class Memoria:
                 return None
             toma = Toma(pedido=charla.pedido, generacion=charla.generacion + 1)
             # R5: lo que se leyó antes de este paso ya no pisa ni reabre
-            sql = "REPLACE INTO generaciones VALUES (?, ?, ?)"
-            con.execute(sql, (conversacion, toma.generacion, ahora_s))
+            con.execute("REPLACE INTO generaciones VALUES (?, ?, ?)", (conversacion, toma.generacion, ahora_s))
             datos = toma.model_dump_json(exclude={"escrita", "en_carrera"})
             sql = "REPLACE INTO confirmaciones VALUES (?, ?, ?, ?, 0)"
             con.execute(sql, (conversacion, ahora_s, datos, self.epoca))  # R25
@@ -284,8 +281,7 @@ class Memoria:
             if con.execute(sql, (self.epoca, ahora_s - HUERFANA.total_seconds())).rowcount:
                 logger.warning("Memoria: toma huérfana liberada")
             for tabla, columna, retencion in (
-                ("charlas", "actualizada", TTL_CHARLA),
-                ("confirmaciones", "actualizada", TTL_CHARLA),
+                ("charlas", "actualizada", TTL_CHARLA), ("confirmaciones", "actualizada", TTL_CHARLA),
                 ("procesados", "marcado", RETENCION_PROCESADOS),
                 ("generaciones", "actualizada", RETENCION_GENERACIONES),
             ):
