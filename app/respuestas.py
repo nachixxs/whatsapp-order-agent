@@ -71,7 +71,8 @@ _MOTIVO_PARA_EL_ASESOR: dict[str, str] = {
 }
 SIN_NOMBRE = "sin nombre registrado"
 PREGUNTA_DEL_NOMBRE = "¿Cómo es tu nombre? Así te agendamos."  # R44
-_SINTAXIS_DE_CHATWOOT = re.compile(r"[\[\]()<>]|mention://", re.IGNORECASE)  # R47: links y menciones; los C* salen aparte  # noqa: E501 (techo de líneas de app/)
+# R47: links y menciones; los C* salen aparte
+_SINTAXIS_DE_CHATWOOT = re.compile(r"[\[\]()<>]|mention://", re.IGNORECASE)
 
 
 def listar(items: Sequence[str], conector: str = "o") -> str:
