@@ -224,13 +224,15 @@ async def webhook_chatwoot(
     if evento.estado_conversacion != "pending":
         # R47: con `open`, `snoozed`, `resolved` o sin estado no es del bot: ni turno ni archivos pendientes, y un
         # "si" no confirma el resumen que vio una persona si la conversacion vuelve a `pending`
-        logger.info("Webhook Chatwoot: conversacion no pendiente estado=%s alias=%s", para_log(evento.estado_conversacion), alias)  # noqa: E501 (techo de líneas de app/)
+        logger.info("Webhook Chatwoot: conversacion no pendiente estado=%s alias=%s",
+                    para_log(evento.estado_conversacion), alias)
         _descartar_ventana(evento.id_conversacion)
         background_tasks.add_task(soltar_pedido_completo, evento.id_conversacion, config, memoria)
         return {"estado": "ignorado"}
     if mensaje is None:  # `pending` pero no es un mensaje entrante (R48)
         return {"estado": "ignorado"}
-    logger.info("Webhook Chatwoot: mensaje aceptado alias=%s evento=%s adjuntos=%d", alias, para_log(mensaje.evento), len(mensaje.adjuntos))  # noqa: E501 (techo de líneas de app/)
+    logger.info("Webhook Chatwoot: mensaje aceptado alias=%s evento=%s adjuntos=%d",
+                alias, para_log(mensaje.evento), len(mensaje.adjuntos))
     _capturar_payload(cuerpo)
     if not _acumular(mensaje, cliente, config, memoria):
         background_tasks.add_task(_procesar_turno, evento.id_conversacion, [mensaje], cliente, config, memoria)
