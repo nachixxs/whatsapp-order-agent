@@ -43,10 +43,8 @@ MEMORIA_RUTA_POR_DEFECTO = Path(__file__).resolve().parent.parent / "memoria.db"
 def workers_pedidos(argv: Sequence[str], entorno: Mapping[str, str]) -> int:
     """R28: cuantos workers pidio quien arranco el servidor. La linea de comandos le gana a
     WEB_CONCURRENCY, igual que en uvicorn. Un valor que no es entero lanza ValueError (no arranca).
-
     Limite: solo ve `--workers N`, `--workers=N`, `-w N` y WEB_CONCURRENCY. `uvicorn.run(workers=N)`
-    desde codigo o un gunicorn.conf.py no se detectan desde aca.
-    """
+    desde codigo o un gunicorn.conf.py no se detectan desde aca."""
     for i, arg in enumerate(argv):
         if arg in ("--workers", "-w") and i + 1 < len(argv):
             return int(argv[i + 1])
@@ -203,11 +201,8 @@ async def _leer_cuerpo_con_tope(request: Request) -> bytes | None:
 
 @app.post("/webhook/chatwoot", response_model=None)
 async def webhook_chatwoot(
-    request: Request,
-    background_tasks: BackgroundTasks,
-    cliente: ClienteChatwoot = Depends(get_cliente_chatwoot),
-    config: ConfigNegocio = Depends(get_config),
-    memoria: Memoria = Depends(get_memoria),
+    request: Request, background_tasks: BackgroundTasks, cliente: ClienteChatwoot = Depends(get_cliente_chatwoot),
+    config: ConfigNegocio = Depends(get_config), memoria: Memoria = Depends(get_memoria),
 ) -> dict[str, str] | JSONResponse:
     cuerpo = await _leer_cuerpo_con_tope(request)
     if cuerpo is None:
