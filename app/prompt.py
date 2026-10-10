@@ -16,17 +16,13 @@ _SEPARADOR_DE_SECCIONES = "\n\n"
 
 
 def _horarios(config: ConfigNegocio) -> str:
-    return "\n".join(
-        f"- {nombre}: {franjas(config.horario.del_dia(dia)) or 'cerrado'}"
-        for dia, nombre in enumerate(DIAS)
-    )
+    return "\n".join(f"- {nombre}: {franjas(config.horario.del_dia(dia)) or 'cerrado'}"
+                     for dia, nombre in enumerate(DIAS))
 
 
 def _catalogo(config: ConfigNegocio) -> str:
-    return "\n".join(
-        f"- id `{producto.id}`: {producto.familia} — {listar(producto.ejemplos)}"
-        for producto in config.catalogo
-    )
+    return "\n".join(f"- id `{producto.id}`: {producto.familia} — {listar(producto.ejemplos)}"
+                     for producto in config.catalogo)
 
 
 def bloque_estatico(config: ConfigNegocio) -> str:
@@ -80,11 +76,8 @@ Ese pedido **no se modifica ni se cancela por acá**. Si en este mensaje pide ca
 
 
 def _campos_cargados(pedido: Pedido) -> list[str]:
-    return [
-        f"- {campo}: {getattr(pedido, campo)}"
-        for campo in CAMPOS_DEL_PEDIDO
-        if getattr(pedido, campo) not in ("", None)
-    ]
+    return [f"- {campo}: {getattr(pedido, campo)}"
+            for campo in CAMPOS_DEL_PEDIDO if getattr(pedido, campo) not in ("", None)]
 
 
 def _pedido_para_el_prompt(pedido: Pedido | None) -> str:
@@ -114,13 +107,8 @@ def _pedido_para_el_prompt(pedido: Pedido | None) -> str:
 
 
 def bloque_dinamico(
-    config: ConfigNegocio,
-    ahora: datetime,
-    *,
-    nombre_perfil: str | None,
-    pedido: Pedido | None,
-    nombre_preguntado: bool = False,
-    confirmado: Pedido | None = None,
+    config: ConfigNegocio, ahora: datetime, *, nombre_perfil: str | None, pedido: Pedido | None,
+    nombre_preguntado: bool = False, confirmado: Pedido | None = None,
 ) -> str:
     """R18: fecha, feriado, quién escribe y pedido. nombre_perfil None es sin perfil (R43)."""
     if ahora.tzinfo is None:  # R37: una hora sin zona se leería como la del servidor
@@ -128,17 +116,11 @@ def bloque_dinamico(
     hoy = ahora.astimezone(config.zona)
     fecha = f"{DIAS[hoy.weekday()]} {hoy.day} de {MESES[hoy.month - 1]} de {hoy.year}"
     # R39: la línea va solo el día del feriado
-    cierre_de_hoy = (
-        " Hoy el local está cerrado todo el día (feriado o día no laborable)."
-        if hoy.date() in config.feriados
-        else ""
-    )
+    cierre_de_hoy = (" Hoy el local está cerrado todo el día (feriado o día no laborable)."
+                     if hoy.date() in config.feriados else "")
     primer_contacto = f"{_PARRAFO_PRIMER_CONTACTO}\n\n" if nombre_preguntado else ""
-    ya_confirmado = (
-        _PARRAFO_PEDIDO_CONFIRMADO.format(datos="\n".join(_campos_cargados(confirmado))) + "\n\n"
-        if confirmado is not None
-        else ""
-    )
+    ya_confirmado = (_PARRAFO_PEDIDO_CONFIRMADO.format(datos="\n".join(_campos_cargados(confirmado))) + "\n\n"
+                     if confirmado is not None else "")
     perfil = nombre_perfil if nombre_perfil is not None else NOMBRE_SIN_PERFIL
 
     return _SEPARADOR_DE_SECCIONES + f"""Hoy es {fecha} ({hoy:%Y-%m-%d}). Resolvé contra esta fecha cualquier expresión relativa ("mañana", "el viernes", "la semana que viene"). Nunca asumas otra fecha ni inventes el año.{cierre_de_hoy}
@@ -156,13 +138,8 @@ Si el cliente aclara que el trabajo va a nombre de otro, usás ese. Y si ya preg
 
 
 def bloques_de_sistema(
-    config: ConfigNegocio,
-    ahora: datetime,
-    *,
-    nombre_perfil: str | None,
-    pedido: Pedido | None,
-    nombre_preguntado: bool = False,
-    confirmado: Pedido | None = None,
+    config: ConfigNegocio, ahora: datetime, *, nombre_perfil: str | None, pedido: Pedido | None,
+    nombre_preguntado: bool = False, confirmado: Pedido | None = None,
 ) -> list[dict[str, Any]]:
     """El parámetro `system`: un solo breakpoint de caché, en el estático (cachea tools + estático)."""
     return [
@@ -170,12 +147,8 @@ def bloques_de_sistema(
         {
             "type": "text",
             "text": bloque_dinamico(
-                config,
-                ahora,
-                nombre_perfil=nombre_perfil,
-                pedido=pedido,
-                nombre_preguntado=nombre_preguntado,
-                confirmado=confirmado,
+                config, ahora, nombre_perfil=nombre_perfil, pedido=pedido,
+                nombre_preguntado=nombre_preguntado, confirmado=confirmado,
             ),
         },
     ]
