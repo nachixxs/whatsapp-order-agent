@@ -1,6 +1,7 @@
 import json
 import re
 import socket
+from pathlib import Path
 from typing import Any
 
 import anthropic
@@ -391,6 +392,95 @@ def test_solo_fallados_con_un_caso_que_no_existe_no_corre(tmp_path: Any) -> None
     cliente = _ClienteDeLotes({})
     assert medir_ruteo.main(["--correr", "--solo-fallados", str(ruta)], cliente=cliente) == 2
     assert cliente.messages.batches.creados == []
+
+
+# ── --config y --casos (CP5, 5.5): lo que no cubre tests/test_contrato_cp5.py ─────
+
+
+def _casos_afuera(carpeta: Path, ids: tuple[str, ...]) -> Path:
+    """Unos casos del set del repo, copiados fuera del repo, como los del privado."""
+    carpeta.mkdir(parents=True, exist_ok=True)
+    crudo = json.loads(medir_ruteo.RUTA_CASOS.read_text(encoding="utf-8"))
+    crudo["casos"] = [caso for caso in crudo["casos"] if caso["id"] in ids]
+    ruta = carpeta / "casos.json"
+    ruta.write_text(json.dumps(crudo, ensure_ascii=False), encoding="utf-8")
+    return ruta
+
+
+def test_solo_fallados_con_casos_manda_esos_y_reescribe_los_fallados_de_su_carpeta(tmp_path: Path) -> None:
+    """Gasto: el fallados.json que dejó una corrida con --casos se vuelve a medir solo, y se reescribe ahí."""
+    casos = _casos_afuera(tmp_path / "privado", ("C03", "G01"))
+    fallados = casos.parent / medir_ruteo.NOMBRE_FALLADOS
+    fallados.write_text(json.dumps({"casos": ["G01"]}), encoding="utf-8")
+    cliente = _ClienteDeLotes({"G01-c1": DIRECCION})
+    argv = ["--correr", "--corridas", "1", "--casos", str(casos), "--solo-fallados", str(fallados)]
+
+    assert medir_ruteo.main(argv, cliente=cliente, dormir=lambda _: None) == 0
+    (enviados,) = cliente.messages.batches.creados
+    assert [pedido["custom_id"] for pedido in enviados] == ["G01-c1"]
+    assert json.loads(fallados.read_text(encoding="utf-8")) == {"casos": []}
+
+
+@pytest.mark.parametrize(("opcion", "mensaje"), [
+    ("--config", "No se pudo leer la config"), ("--casos", "No se pudieron leer los casos"),
+])
+def test_una_config_o_unos_casos_que_no_existen_cortan_antes_del_lote(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], opcion: str, mensaje: str
+) -> None:
+    """Gasto: una ruta mal escrita no manda nada y dice qué archivo faltó."""
+    cliente = _ClienteDeLotes({})
+    argv = ["--correr", opcion, str(tmp_path / "no-esta.json"), "--guardar-fallados", str(tmp_path / "f.json")]
+
+    assert medir_ruteo.main(argv, cliente=cliente) == 2
+    assert cliente.messages.batches.creados == []
+    salida = capsys.readouterr().out
+    assert mensaje in salida and "no-esta.json" in salida
+
+
+def test_una_config_que_no_valida_corta_antes_del_lote(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """R40: la config se valida al cargar; una rota no llega a armar requests."""
+    rota = tmp_path / "negocio.json"
+    rota.write_text(json.dumps({"nombre": "Imprenta Prueba"}), encoding="utf-8")
+    cliente = _ClienteDeLotes({})
+
+    assert medir_ruteo.main(["--correr", "--config", str(rota)], cliente=cliente) == 2
+    assert cliente.messages.batches.creados == []
+    assert "No se pudo leer la config" in capsys.readouterr().out
+
+
+def test_retomar_con_los_casos_del_repo_se_niega_aunque_la_ruta_sea_relativa(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CONTRATO-CP5 C2: la ruta se compara resuelta, así que un '..' no esquiva la negativa; no se consulta el lote."""
+    monkeypatch.chdir(medir_ruteo.RAIZ / "scripts")
+    cliente = _ClienteDeLotes({"C03-c1": CONFIRMA})
+
+    codigo = medir_ruteo.main(["--retomar", "msgbatch_prueba", "--casos", "../tests/ruteo/casos.json"], cliente=cliente)
+
+    assert codigo == 2
+    assert cliente.messages.batches.estados == ["in_progress", "ended"]  # ni un retrieve
+    assert "--casos apunta adentro del repo público" in capsys.readouterr().out
+
+
+def test_con_casos_afuera_tampoco_se_guardan_los_fallados_adentro(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """CONTRATO-CP5 C2: con --casos, un --guardar-fallados adentro del repo también se niega, antes del lote."""
+    casos = _casos_afuera(tmp_path, ("C03",))
+    adentro = medir_ruteo.RUTA_CASOS.parent / medir_ruteo.NOMBRE_FALLADOS
+    cliente = _ClienteDeLotes({"C03-c1": CONFIRMA})
+    argv = ["--correr", "--corridas", "1", "--casos", str(casos), "--guardar-fallados", str(adentro)]
+
+    assert medir_ruteo.main(argv, cliente=cliente) == 2
+    assert cliente.messages.batches.creados == []
+    assert not adentro.exists()
+    assert "--guardar-fallados apunta adentro del repo público" in capsys.readouterr().out
+
+
+def test_estimar_con_los_casos_del_repo_se_permite(capsys: pytest.CaptureFixture[str]) -> None:
+    """--estimar no escribe nada ni toca la red: con --casos adentro del repo no hay nada que negar."""
+    assert medir_ruteo.main(["--casos", str(medir_ruteo.RUTA_CASOS), "--corridas", "1"]) == 0
+    assert "No se hizo ninguna llamada" in capsys.readouterr().out
 
 
 def test_un_caso_con_varias_opciones_exige_por_que() -> None:

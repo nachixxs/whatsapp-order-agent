@@ -7,6 +7,17 @@ Uso, desde la raíz del repo (PowerShell):
     .venv\\Scripts\\python.exe scripts\\medir_ruteo.py --correr --solo-fallados .ruteo-fallados.json
     .venv\\Scripts\\python.exe scripts\\medir_ruteo.py --retomar msgbatch_...  # baja un lote ya pagado
 
+Con una config y unos casos que no son los del repo (los reales viven en otro repo, privado):
+    $privado = "C:\\ruta\\al\\repo\\privado"
+    .venv\\Scripts\\python.exe scripts\\medir_ruteo.py --config $privado\\config\\negocio.json `
+        --casos $privado\\ruteo\\casos.json                                  # --estimar, sin red
+    .venv\\Scripts\\python.exe scripts\\medir_ruteo.py --config $privado\\config\\negocio.json `
+        --casos $privado\\ruteo\\casos.json --correr                         # gasta API: solo con OK
+
+Sin --config ni --casos: config/negocio.ejemplo.json, tests/ruteo/casos.json y los fallados en .ruteo-fallados.json.
+Con --casos, los fallados quedan junto a los casos (fallados.json en su carpeta), nunca en este repo; y si los
+casos están adentro del repo, --correr y --retomar se niegan (--estimar no escribe nada y se permite).
+
 Los requests los arma `agente.armar_request`, igual que en producción. Una respuesta sin tool es fallo (R11).
 """
 
@@ -41,6 +52,7 @@ from app.tools import definir_tools  # noqa: E402
 RUTA_CASOS = RAIZ / "tests" / "ruteo" / "casos.json"
 RUTA_CONFIG = RAIZ / "config" / "negocio.ejemplo.json"
 RUTA_FALLADOS = RAIZ / ".ruteo-fallados.json"
+NOMBRE_FALLADOS = "fallados.json"  # con --casos, en la carpeta de los casos
 TELEFONO_FICTICIO = "+54 9 11 5555-0000"  # Pedido lo exige; no va al prompt (R13)
 
 UMBRAL = 0.95  # por corrida; los críticos, bien en todas (ESTADO 2026-09-28)
@@ -421,9 +433,14 @@ def _argumentos(argv: Sequence[str] | None) -> argparse.Namespace:
     modo.add_argument("--estimar", action="store_true", help="por defecto: estima el costo sin red")
     modo.add_argument("--correr", action="store_true", help="manda un lote por Batch API (gasta)")
     modo.add_argument("--retomar", metavar="ID_DEL_LOTE", help="espera y puntúa un lote ya mandado")
+    parser.add_argument("--config", type=Path, default=RUTA_CONFIG, metavar="RUTA", help="por defecto, la de ejemplo")
+    parser.add_argument("--casos", type=Path, metavar="RUTA", help="por defecto, tests/ruteo/casos.json")
     parser.add_argument("--corridas", type=int, default=CORRIDAS)
     parser.add_argument("--solo-fallados", type=Path, metavar="ARCHIVO")
-    parser.add_argument("--guardar-fallados", type=Path, default=RUTA_FALLADOS, metavar="ARCHIVO")
+    parser.add_argument(
+        "--guardar-fallados", type=Path, metavar="ARCHIVO",
+        help=f"por defecto, {NOMBRE_FALLADOS} junto a --casos; sin --casos, {RUTA_FALLADOS.name} en la raíz",
+    )
     parser.add_argument("--espera-maxima", type=float, default=ESPERA_MAXIMA_MIN, metavar="MINUTOS")
     argumentos = parser.parse_args(argv)
     if argumentos.corridas < 1:
@@ -431,12 +448,52 @@ def _argumentos(argv: Sequence[str] | None) -> argparse.Namespace:
     return argumentos
 
 
+def _adentro_del_repo(ruta: Path) -> bool:
+    return ruta.resolve().is_relative_to(RAIZ)
+
+
+def _destino_de_fallados(argumentos: argparse.Namespace) -> Path:
+    if argumentos.guardar_fallados is not None:
+        return argumentos.guardar_fallados
+    if argumentos.casos is not None:
+        return argumentos.casos.parent / NOMBRE_FALLADOS
+    return RUTA_FALLADOS
+
+
+def _negativa(argumentos: argparse.Namespace, destino: Path) -> str | None:
+    """Con --casos, una corrida no deja nada en el repo público: ni los casos ni sus fallados (CONTRATO-CP5 C2)."""
+    if argumentos.casos is None or not (argumentos.correr or argumentos.retomar):
+        return None  # --estimar no escribe nada
+    for opcion, ruta in (("--casos", argumentos.casos), ("--guardar-fallados", destino)):
+        if _adentro_del_repo(ruta):
+            return (
+                f"{opcion} apunta adentro del repo público ({ruta.resolve()}). Con --casos, los casos y sus "
+                "fallados van fuera del repo; para el set del repo, se corre sin --casos. "
+                "No se mandó ni se bajó ningún lote."
+            )
+    return None
+
+
 def main(
     argv: Sequence[str] | None = None, *, cliente: Any = None, dormir: Callable[[float], None] = time.sleep
 ) -> int:
     """0 pasa, 1 no pasa el umbral, 2 no se pudo medir."""
     argumentos = _argumentos(argv)
-    config, dorado = cargar_config(RUTA_CONFIG), cargar_casos()
+    destino = _destino_de_fallados(argumentos)
+    negativa = _negativa(argumentos, destino)
+    if negativa:
+        print(negativa)
+        return 2
+    try:
+        config = cargar_config(argumentos.config)
+    except (OSError, ValueError) as error:  # ValidationError es un ValueError
+        print(f"No se pudo leer la config: {error}")
+        return 2
+    try:
+        dorado = cargar_casos(argumentos.casos or RUTA_CASOS)
+    except (OSError, ValueError) as error:
+        print(f"No se pudieron leer los casos: {error}")
+        return 2
     errores = errores_contra_tools(dorado, definir_tools(config))
     if errores:
         print("El set dorado no coincide con las tools:\n" + "\n".join(errores))
@@ -486,7 +543,7 @@ def main(
         casos, corridas = _del_lote(casos, resultados, corridas)
     informe = puntuar_lote(dorado, casos, corridas, resultados)
     pasa, fallados = reportar(informe, casos)
-    _guardar_fallados(argumentos.guardar_fallados, fallados)
+    _guardar_fallados(destino, fallados)
     return 0 if pasa else 1
 
 
