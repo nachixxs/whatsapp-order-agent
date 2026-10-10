@@ -1,7 +1,22 @@
 # Solo `ruff check`, nunca `ruff format`: reflotar el código cambia el conteo de líneas del presupuesto.
-# Sin CI todavía: correrlo y decidir si bloquea, en el CP5.
 line-length = 120
 target-version = "py314"
 
 [lint]
 select = ["E", "F", "I", "B", "UP", "T20", "DTZ", "BLE"]
+
+[lint.flake8-bugbear]
+# `Depends(...)` en el default de un parámetro es el patrón normal de FastAPI, no un bug.
+extend-immutable-calls = ["fastapi.Depends"]
+
+[lint.per-file-ignores]
+# Los scripts son de consola: imprimir es su salida.
+"scripts/**" = ["T201"]
+# Los tests redefinen fixtures por nombre (F811) y arman datetimes ingenuos a propósito (DTZ001).
+"tests/**" = ["F811", "DTZ001"]
+# Strings del system prompt: partirlos cambiaría el prompt (R17).
+"app/prompt.py" = ["E501"]
+# El import multilínea de `app.confirmacion` / `app.respuestas` está en grilla; isort lo pasa a uno por línea y suma
+# líneas a archivos con techo (turno.py en 282/300). El orden entre imports sí está a mano.
+"app/confirmacion.py" = ["I001"]
+"app/turno.py" = ["I001"]
