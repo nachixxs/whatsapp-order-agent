@@ -107,7 +107,7 @@ class Caso(_Estricto):
     por_que: str | None = None
 
     @model_validator(mode="after")
-    def _justificado(self) -> "Caso":
+    def _justificado(self) -> Caso:
         if len(self.esperado) > 1 and not self.por_que:
             raise ValueError(f"{self.id}: más de una decisión aceptable sin por_que")
         return self
@@ -120,7 +120,7 @@ class SetDorado(_Estricto):
     casos: tuple[Caso, ...]
 
     @model_validator(mode="after")
-    def _coherente(self) -> "SetDorado":
+    def _coherente(self) -> SetDorado:
         ids = [caso.id for caso in self.casos]
         if len(set(ids)) != len(ids):
             raise ValueError("ids de caso repetidos")
@@ -523,7 +523,7 @@ def main(
         pedidos = [
             {"custom_id": custom_id(caso.id, corrida), "params": request}
             for corrida in range(1, corridas + 1)
-            for caso, request in zip(casos, requests)
+            for caso, request in zip(casos, requests, strict=False)
         ]
         try:
             lote = cliente.messages.batches.create(requests=pedidos).id

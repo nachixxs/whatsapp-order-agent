@@ -24,7 +24,7 @@ def _visible(caracter: str) -> str:
 def para_log(valor: object) -> str:
     try:
         texto = "".join(_visible(c) for c in str(valor)[: TOPE_LOG + 1])
-    except Exception:  # R52: loguear nunca lanza, ni con un __str__ roto
+    except Exception:  # R52: loguear nunca lanza, ni con un __str__ roto  # noqa: BLE001
         return ILEGIBLE
     return texto if len(texto) <= TOPE_LOG else texto[: TOPE_LOG - 1] + "…"
 
@@ -34,7 +34,7 @@ def alias_conversacion(identificador: object) -> str:
     try:
         datos = str(identificador).encode("utf-8", "surrogatepass")
         return hashlib.blake2b(datos, key=_SAL, digest_size=6).hexdigest()
-    except Exception:  # R52: loguear nunca lanza, ni con un __str__ roto
+    except Exception:  # R52: loguear nunca lanza, ni con un __str__ roto  # noqa: BLE001
         return ILEGIBLE
 
 

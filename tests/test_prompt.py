@@ -191,7 +191,10 @@ def test_pedido_confirmado_solo_si_lo_hay(config: ConfigNegocio) -> None:
     """R7: el párrafo PEDIDO YA CONFIRMADO entra al dinámico solo con un pedido confirmado."""
     assert "PEDIDO YA CONFIRMADO" not in _dinamico(config)
     texto = _dinamico(config, confirmado=COMPLETO)
-    assert "PEDIDO YA CONFIRMADO\nEste cliente ya confirmó un pedido, que quedó tomado y anotado:\n- producto: sellos" in texto
+    assert (
+        "PEDIDO YA CONFIRMADO\nEste cliente ya confirmó un pedido, que quedó tomado y anotado:\n- producto: sellos"
+        in texto
+    )
     assert texto.index("PEDIDO YA CONFIRMADO") < texto.index("PEDIDO EN CURSO")
 
 
