@@ -1056,6 +1056,38 @@ def test_un_archivo_sin_epigrafe_no_cuenta(memoria: Memoria, config: ConfigNegoc
     assert _lote(CONV, _textos(1), config, memoria, _Agente()) == _derivado(TOPE, config)
 
 
+def test_pasado_el_tope_un_lote_solo_de_archivos_deriva_y_el_archivo_queda(
+    memoria: Memoria, config: ConfigNegocio
+) -> None:
+    """R30, R35, R47: sin nada para el modelo, el tope se evalúa igual; el archivo se suma y va en la nota."""
+    _lote(CONV, _textos(31), config, memoria, _Agente())
+    agente = _Agente()
+
+    resultado = procesar_lote(CONV, [_archivo()], config, memoria, agente, _Planilla())
+
+    pedido = _pedido(memoria)
+    assert len(pedido.archivos) == 1 and agente.llamadas == []
+    assert resultado == Resultado(_derivado(TOPE, config), nota_de_derivacion(TOPE, pedido, None, config), True)
+
+
+def test_pasado_el_tope_ni_el_sticker_ni_el_archivo_61_tapan_la_derivacion(
+    memoria: Memoria, config: ConfigNegocio
+) -> None:
+    """R30, R35, R36: un sticker, el archivo 61 y un texto pasado el tope: deriva por el tope, no por el
+    adjunto ni por fuera_de_alcance; el sticker queda en el historial y el pedido sigue con sus 60."""
+    _lote(CONV, [_archivo() for _ in range(60)], config, memoria, _Agente(), _Planilla())
+    _lote(CONV, _textos(31), config, memoria, _Agente())
+    agente = _Agente(HORARIOS)
+    lote = [_archivo(_adjunto("image", "webp")), _archivo(), _mensaje("¿lo ven bien?")]
+
+    resultado = procesar_lote(CONV, lote, config, memoria, agente, _Planilla())
+
+    pedido = _pedido(memoria)
+    assert len(pedido.archivos) == 60 and agente.llamadas == []
+    assert resultado == Resultado(_derivado(TOPE, config), nota_de_derivacion(TOPE, pedido, None, config), True)
+    assert _historial(memoria)[-3:] == [NO_SOPORTADO, "¿lo ven bien?", f"[derivado_a_asesor: {TOPE}]"]
+
+
 def test_un_si_pasado_el_tope_deriva_con_el_pedido_y_no_escribe_la_fila(
     memoria: Memoria, config: ConfigNegocio
 ) -> None:
