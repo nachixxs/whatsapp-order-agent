@@ -7,15 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 
 from app import agente
-from app.agente import (
-    ConsultaGeneral,
-    Decision,
-    DerivarAAsesor,
-    ErrorApi,
-    PedirDatoFaltante,
-    RegistrarPedido,
-    SinTool,
-)
+from app.agente import ConsultaGeneral, Decision, DerivarAAsesor, ErrorApi, PedirDatoFaltante, RegistrarPedido, SinTool
 from app.chatwoot import Adjunto, ClienteChatwoot, Contacto, MensajeEntrante
 from app.confirmacion import (
     CONFIRMADO, ESCRIBIR, Salida, a_un_asesor, candado, carrera, confirmar, derivada, pedido_confirmado,
@@ -64,12 +56,8 @@ class Resultado:  # R47: lo que sale de un lote, en este orden: la respuesta, la
 
 
 def procesar_lote(
-    conversacion: int,
-    mensajes: Sequence[MensajeEntrante],
-    config: ConfigNegocio,
-    memoria: Memoria,
-    decidir: Decidir = agente.decidir,
-    planilla: Planilla = _planilla,
+    conversacion: int, mensajes: Sequence[MensajeEntrante], config: ConfigNegocio, memoria: Memoria,
+    decidir: Decidir = agente.decidir, planilla: Planilla = _planilla,
     actualizar_contacto: Callable[[int, dict[str, object]], bool] = ClienteChatwoot().actualizar_contacto,
 ) -> Resultado:
     """Nunca lanza: ante un error, el error interno, sin nota ni pase (R24). Un lote, una respuesta (R30)."""
@@ -147,8 +135,7 @@ def _sumar_archivos(
     """R29: los archivos van al pedido en curso antes del modelo. Devuelve un error o el acuse de R32;
     None deja el acuse para cuando el texto del lote ya se aplicó (R31)."""
     adjuntos = [(mensaje, adjunto) for mensaje in lote for adjunto in mensaje.adjuntos]
-    archivos = [_archivo(mensaje, adjunto, config, ahora) for mensaje, adjunto in adjuntos
-                if _de_diseno(adjunto)]
+    archivos = [_archivo(mensaje, adjunto, config, ahora) for mensaje, adjunto in adjuntos if _de_diseno(adjunto)]
     no_soportado = Salida(_NO_SOPORTADO, MENSAJE_TIPO_NO_SOPORTADO, error=True)  # R36: nunca silencio
     error = no_soportado if len(archivos) < len(adjuntos) else None
     if not archivos:
@@ -174,9 +161,7 @@ def _de_diseno(adjunto: Adjunto) -> bool:  # R29: la imagen y el documento, como
     return adjunto.tipo == "file" or adjunto.tipo == "image" and adjunto.extension != "webp"  # R36: sticker
 
 
-def _archivo(
-    mensaje: MensajeEntrante, adjunto: Adjunto, config: ConfigNegocio, ahora: datetime
-) -> ArchivoAdjunto:
+def _archivo(mensaje: MensajeEntrante, adjunto: Adjunto, config: ConfigNegocio, ahora: datetime) -> ArchivoAdjunto:
     hora = (mensaje.creado or ahora).astimezone(config.zona).replace(tzinfo=None)  # R29: hora de pared
     return ArchivoAdjunto(
         id_adjunto=adjunto.id, id_mensaje=mensaje.id_mensaje, tipo=adjunto.extension or adjunto.tipo,
@@ -223,9 +208,7 @@ def _turno(
     salida = salida or _aplicar(decision, charla, contacto.telefono, registrado, config, ahora)
     if salida is ESCRIBIR:
         salida = confirmar(conversacion, memoria, planilla, ahora)
-    if salida.pedido is not None and not memoria.guardar_pedido(
-        conversacion, salida.pedido, charla.generacion, ahora
-    ):
+    if salida.pedido is not None and not memoria.guardar_pedido(conversacion, salida.pedido, charla.generacion, ahora):
         # R5: otro mensaje tomó el pedido mientras el modelo decidía. Con el candado (R28) no pasa dentro
         # de un proceso; si pasara, como R6 sin cambios: ni texto ni turno del bot
         salida = Salida("generacion_cambiada", None, marcar=False)
@@ -257,9 +240,7 @@ def _aplicar(
     return respuesta_al_resumen(argumentos, charla.pedido)
 
 
-def _registrar(
-    argumentos: RegistrarPedido, base: Pedido, config: ConfigNegocio, ahora: datetime
-) -> Salida:
+def _registrar(argumentos: RegistrarPedido, base: Pedido, config: ConfigNegocio, ahora: datetime) -> Salida:
     """R14: suma campo por campo; contesta el aviso de lo descartado, el resumen o la repregunta."""
     pedido, descartados = sumar_campos(base, argumentos.model_dump(), config, ahora)
     aviso = aviso_de_descartados(descartados, pedido, config)
