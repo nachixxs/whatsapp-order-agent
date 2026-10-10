@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS generaciones (
 CREATE TABLE IF NOT EXISTS confirmaciones (
     conversacion INTEGER PRIMARY KEY, actualizada REAL NOT NULL, datos TEXT NOT NULL,
     epoca TEXT NOT NULL, escrita INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS contadores (conversacion INTEGER PRIMARY KEY, mensajes INTEGER NOT NULL);
 """
 
 
@@ -272,6 +273,13 @@ class Memoria:
         """R23: el proceso falló; un reintento del mismo id lo vuelve a procesar."""
         with self._transaccion("procesados") as con:
             con.execute("DELETE FROM procesados WHERE id_mensaje = ?", (id_mensaje,))
+
+    def contar_mensajes(self, conversacion: int, cuantos: int) -> int:
+        """Suma los mensajes nuevos del cliente y devuelve el total. `barrer` no lo toca: con el TTL alcanzaría
+        con esperar para saltear el tope. Es una fila chica por conversación."""
+        with self._transaccion("contadores") as con:
+            sql = "INSERT INTO contadores VALUES (?1, ?2) ON CONFLICT DO UPDATE SET mensajes = mensajes + ?2"
+            return int(con.execute(f"{sql} RETURNING mensajes", (conversacion, cuantos)).fetchall()[0][0])
 
     def barrer(self, ahora: datetime) -> None:
         ahora_s = _segundos(ahora)

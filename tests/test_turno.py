@@ -1010,6 +1010,70 @@ def test_un_error_no_deja_nota_ni_pase(memoria: Memoria, config: ConfigNegocio) 
     assert resultado == Resultado(MENSAJE_ERROR_INTERNO)
 
 
+# Tope de mensajes del cliente por conversación (CP5, 5.4). Lo básico está en test_contrato_cp5.py (A1 a A4)
+
+TOPE = "tope_de_mensajes"
+
+
+def _textos(cuantos: int) -> list[MensajeEntrante]:
+    return [_mensaje("¿a qué hora abren?") for _ in range(cuantos)]
+
+
+def test_un_lote_cuenta_todos_sus_mensajes(memoria: Memoria, config: ConfigNegocio) -> None:
+    """Treinta mensajes en un lote son una llamada, pero cuentan treinta: el que sigue ya no va a la API."""
+    agente = _Agente(HORARIOS)
+    assert _lote(CONV, _textos(30), config, memoria, agente) == respuesta_faq("horarios", config)
+
+    resultado = procesar_lote(CONV, _textos(1), config, memoria, agente)
+
+    assert resultado == Resultado(_derivado(TOPE, config), nota_de_derivacion(TOPE, None, None, config), True)
+    assert len(agente.llamadas) == 1
+
+
+def test_un_lote_que_pasa_el_tope_de_una_vez_no_va_a_la_api(memoria: Memoria, config: ConfigNegocio) -> None:
+    agente = _Agente()
+
+    assert _lote(CONV, _textos(31), config, memoria, agente) == _derivado(TOPE, config)
+    assert agente.llamadas == []
+
+
+def test_el_dedup_no_cuenta_dos_veces_el_mismo_mensaje(memoria: Memoria, config: ConfigNegocio) -> None:
+    """R23: el repetido dentro del lote y el reintento del lote entero no suman; el 30 sigue normal."""
+    lote, agente = _textos(29), _Agente(HORARIOS, HORARIOS)
+    _lote(CONV, [*lote, lote[0]], config, memoria, agente)
+    assert _lote(CONV, lote, config, memoria, agente) is None
+
+    assert _lote(CONV, _textos(1), config, memoria, agente) == respuesta_faq("horarios", config)
+    assert _lote(CONV, _textos(1), config, memoria, agente) == _derivado(TOPE, config)
+    assert len(agente.llamadas) == 2
+
+
+def test_un_archivo_sin_epigrafe_no_cuenta(memoria: Memoria, config: ConfigNegocio) -> None:
+    """§3, R35: un archivo solo no va a la API; con el contador en el tope igual se acusa."""
+    _lote(CONV, _textos(30), config, memoria, _Agente(HORARIOS))
+
+    assert _lote(CONV, [_archivo()], config, memoria, _Agente()) == acuse_de_archivos(1, _pedido(memoria), config)
+    assert _lote(CONV, _textos(1), config, memoria, _Agente()) == _derivado(TOPE, config)
+
+
+def test_un_si_pasado_el_tope_deriva_con_el_pedido_y_no_escribe_la_fila(
+    memoria: Memoria, config: ConfigNegocio
+) -> None:
+    """R2, R47: el "sí" al resumen que cae pasado el tope no llega al modelo ni a la planilla. La nota lleva el
+    pedido en curso y el nombre, y el pedido se suelta: un "sí" después no confirma lo que vio una persona."""
+    pedido = _pendiente(memoria, config)
+    _lote(CONV, _textos(29), config, memoria, _Agente(HORARIOS))
+    planilla, agente = _Planilla(), _Agente(_confirmar(True))
+
+    resultado = procesar_lote(CONV, [_mensaje("sí")], config, memoria, agente, planilla)
+
+    nota = nota_de_derivacion(TOPE, pedido, NOMBRE, config)
+    assert resultado == Resultado(_derivado(TOPE, config), nota, derivar=True)
+    assert planilla.filas == [] and agente.llamadas == []
+    assert _charla(memoria).pedido is None
+    assert _historial(memoria)[-1] == f"[derivado_a_asesor: {TOPE}]"
+
+
 # R41 a R45 · primer contacto
 
 PIDE_EL_NOMBRE = Decision("pedir_dato_faltante", PedirDatoFaltante(dato="nombre_cliente"))
