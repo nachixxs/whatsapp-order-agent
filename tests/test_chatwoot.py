@@ -41,7 +41,9 @@ def test_parsear_estado_evento_de_conversacion() -> None:
     cuerpo = {"event": "conversation_status_changed", "id": 555, "status": "open", "inbox_id": 2, "account": {"id": 1}}
     evento = parsear_estado(json.dumps(cuerpo).encode())
     assert evento is not None
-    assert (evento.id_conversacion, evento.estado_conversacion, evento.account_id, evento.inbox_id) == (555, "open", 1, 2)
+    assert (
+        evento.id_conversacion, evento.estado_conversacion, evento.account_id, evento.inbox_id
+    ) == (555, "open", 1, 2)
     assert parsear_evento(json.dumps(cuerpo).encode()) is None  # para el turno sigue sin ser un mensaje (R48)
 
 
@@ -51,7 +53,9 @@ def test_parsear_estado_mensaje_usa_el_mismo_id_que_el_turno(cambios: dict[str, 
     cuerpo = json.dumps(_payload(conversation={"id": 555, "status": "snoozed"}, **cambios)).encode()
     evento = parsear_estado(cuerpo)
     assert evento is not None
-    assert (evento.id_conversacion, evento.estado_conversacion, evento.account_id, evento.inbox_id) == (555, "snoozed", 1, 2)
+    assert (
+        evento.id_conversacion, evento.estado_conversacion, evento.account_id, evento.inbox_id
+    ) == (555, "snoozed", 1, 2)
     mensaje = parsear_evento(cuerpo)
     assert mensaje is None or mensaje.id_conversacion == evento.id_conversacion
 
@@ -68,7 +72,7 @@ def test_parsear_estado_mensaje_usa_el_mismo_id_que_el_turno(cambios: dict[str, 
             b'{"event": "conversation_updated", "id": {"x": 1}, "status": ["open"], "account": "x", "inbox_id": [1]}',
             id="campos_con_otro_tipo",
         ),
-        pytest.param('{"event": "conversation_opened", "id": 1, "status": "a\\ud83d"}'.encode(), id="surrogate_escapado"),
+        pytest.param(b'{"event": "conversation_opened", "id": 1, "status": "a\\ud83d"}', id="surrogate_escapado"),
     ],
 )
 def test_parsear_estado_nunca_lanza(cuerpo: bytes) -> None:
@@ -153,7 +157,9 @@ def test_creado_en_utc_y_none_si_falta_o_es_invalido() -> None:
         assert mensaje.creado is None
 
 
-def _cliente(monkeypatch: pytest.MonkeyPatch, estado: int = 200, error: bool = False) -> tuple[ClienteChatwoot, list[httpx.Request]]:
+def _cliente(
+    monkeypatch: pytest.MonkeyPatch, estado: int = 200, error: bool = False
+) -> tuple[ClienteChatwoot, list[httpx.Request]]:
     monkeypatch.setenv("CHATWOOT_URL", "http://chatwoot.local")
     monkeypatch.setenv("CHATWOOT_ACCOUNT_ID", "1")
     monkeypatch.setenv("CHATWOOT_BOT_TOKEN", "secreto-de-prueba")
@@ -173,7 +179,9 @@ def test_nota_interna_es_un_mensaje_privado(monkeypatch: pytest.MonkeyPatch) -> 
     cliente, llamadas = _cliente(monkeypatch)
     assert cliente.nota_interna(555, "Nota de prueba") is True
     assert llamadas[0].url.path == "/api/v1/accounts/1/conversations/555/messages"
-    assert json.loads(llamadas[0].content) == {"content": "Nota de prueba", "message_type": "outgoing", "private": True}
+    assert json.loads(llamadas[0].content) == {
+        "content": "Nota de prueba", "message_type": "outgoing", "private": True
+    }
 
 
 def test_pasar_a_persona_pone_la_conversacion_en_open(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -223,7 +231,10 @@ def test_contacto_trae_id_y_atributos() -> None:
     assert mensaje.contacto.atributos == {"nombre_preguntado": True}
 
 
-@pytest.mark.parametrize("crudo", [{}, {"id": "x", "custom_attributes": None}, {"id": [1], "custom_attributes": "texto"}, {"custom_attributes": [1]}])
+@pytest.mark.parametrize(
+    "crudo",
+    [{}, {"id": "x", "custom_attributes": None}, {"id": [1], "custom_attributes": "texto"}, {"custom_attributes": [1]}],
+)
 def test_contacto_sin_id_o_atributos_validos_da_none_sin_lanzar(crudo: dict[str, object]) -> None:
     """R45, R51: tipos raros dan None (sin dato), nunca una excepcion."""
     mensaje = parsear_evento(_con_sender(**crudo))

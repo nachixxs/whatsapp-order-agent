@@ -86,7 +86,7 @@ def turno_falso(monkeypatch: pytest.MonkeyPatch) -> TurnoFalso:
 class TimerFalso:
     """Reemplaza a threading.Timer: no espera, el test lo dispara con `disparar()`."""
 
-    creados: list["TimerFalso"] = []
+    creados: list[TimerFalso] = []
     espera_real: float = 0.0
 
     def __init__(self, intervalo: float, funcion: object, args: tuple[object, ...]) -> None:
@@ -408,7 +408,8 @@ def _turno(
 
 
 def test_r47_derivar_responde_deja_la_nota_y_pasa_a_open_en_ese_orden(
-    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso, turno_falso: TurnoFalso
 ) -> None:
     """R47: respuesta, nota interna y open, en ese orden."""
     _turno(client, config, monkeypatch, turno_falso, "texto", "nota", True)
@@ -417,7 +418,8 @@ def test_r47_derivar_responde_deja_la_nota_y_pasa_a_open_en_ese_orden(
 
 
 def test_r32_nota_sin_derivar_no_pasa_a_open(
-    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso, turno_falso: TurnoFalso
 ) -> None:
     """R32: la nota del archivo despues de confirmar se deja, pero la conversacion sigue con el bot."""
     _turno(client, config, monkeypatch, turno_falso, "texto", "archivo", False)
@@ -425,7 +427,8 @@ def test_r32_nota_sin_derivar_no_pasa_a_open(
 
 
 def test_r47_derivar_sin_nota_pasa_a_open_igual(
-    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso, turno_falso: TurnoFalso
 ) -> None:
     """R47: sin nota la conversacion pasa a open igual."""
     _turno(client, config, monkeypatch, turno_falso, "texto", None, True)
@@ -433,7 +436,8 @@ def test_r47_derivar_sin_nota_pasa_a_open_igual(
 
 
 def test_r47_falla_la_respuesta_la_nota_y_open_salen_igual(
-    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso, turno_falso: TurnoFalso
 ) -> None:
     """R47: la persona tiene que ver la nota y la conversacion pasar a open aunque la respuesta no haya salido."""
     cliente_falso.fallan = {"responder"}
@@ -442,7 +446,8 @@ def test_r47_falla_la_respuesta_la_nota_y_open_salen_igual(
 
 
 def test_r47_falla_la_nota_open_sale_igual(
-    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso, turno_falso: TurnoFalso
 ) -> None:
     """R47: una nota que no salio no deja al cliente sin persona."""
     cliente_falso.fallan = {"nota_interna"}
@@ -451,7 +456,8 @@ def test_r47_falla_la_nota_open_sale_igual(
 
 
 def test_r47_texto_none_con_nota_la_nota_sale_igual(
-    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, cliente_falso: ClienteFalso, turno_falso: TurnoFalso
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch,
+    cliente_falso: ClienteFalso, turno_falso: TurnoFalso
 ) -> None:
     """R32: un archivo que no se acusa igual deja su nota; sin texto no se le escribe al cliente."""
     _turno(client, config, monkeypatch, turno_falso, None, "archivo", False)
@@ -500,7 +506,9 @@ def test_r28_con_mas_de_un_worker_el_servidor_no_arranca(
     """R28: el lifespan aborta con mas de un worker y no abre la memoria; con uno, arranca y cierra."""
     monkeypatch.setattr("sys.argv", ["uvicorn", "app.main:app"])
     # negocio.json real esta en .gitignore: el CI solo tiene el ejemplo
-    monkeypatch.setattr("app.main.RUTA_POR_DEFECTO", Path(__file__).resolve().parent.parent / "config" / "negocio.ejemplo.json")
+    monkeypatch.setattr(
+        "app.main.RUTA_POR_DEFECTO", Path(__file__).resolve().parent.parent / "config" / "negocio.ejemplo.json"
+    )
     monkeypatch.setenv("MEMORIA_RUTA", str(tmp_path / "m.db"))
     monkeypatch.setenv("WEB_CONCURRENCY", "2")
     with pytest.raises(RuntimeError, match="R28"), TestClient(app):
@@ -514,7 +522,9 @@ def test_r28_con_mas_de_un_worker_el_servidor_no_arranca(
 def test_el_arranque_enciende_los_logs_info_de_la_app(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Bajo uvicorn el root no tiene handler y los INFO de la app no salen; el lifespan los enciende."""
     monkeypatch.setattr("sys.argv", ["uvicorn", "app.main:app"])
-    monkeypatch.setattr("app.main.RUTA_POR_DEFECTO", Path(__file__).resolve().parent.parent / "config" / "negocio.ejemplo.json")
+    monkeypatch.setattr(
+        "app.main.RUTA_POR_DEFECTO", Path(__file__).resolve().parent.parent / "config" / "negocio.ejemplo.json"
+    )
     monkeypatch.setenv("MEMORIA_RUTA", str(tmp_path / "m.db"))
     monkeypatch.delenv("WEB_CONCURRENCY", raising=False)
     raiz = logging.getLogger()
@@ -549,7 +559,9 @@ def test_docs_deshabilitados(client: TestClient) -> None:
     assert client.get("/openapi.json").status_code == 404
 
 
-def test_salud_ok_con_config_completa(client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_salud_ok_con_config_completa(
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """R55: /salud da 200 cuando la config de Chatwoot esta completa."""
     _configurar_entorno(monkeypatch)
     respuesta = client.get("/salud")
@@ -749,7 +761,7 @@ def test_webhook_firma_no_ascii_nunca_da_500(
     _configurar_entorno(monkeypatch)
     cuerpo = json.dumps(_payload()).encode()
     cabeceras = _cabeceras(cuerpo, config)
-    cabeceras["X-Chatwoot-Signature"] = "sha256=ñ".encode("utf-8")  # type: ignore[assignment]
+    cabeceras["X-Chatwoot-Signature"] = "sha256=ñ".encode()  # type: ignore[assignment]
     _sin_eco(client.post("/webhook/chatwoot", content=cuerpo, headers=cabeceras), cliente_falso)
 
 
@@ -802,7 +814,9 @@ def test_salud_degradado_sin_el_token_de_agente(
     assert (respuesta.status_code, respuesta.json()) == (503, {"estado": "degradado"})
 
 
-def _evento_conversacion(evento: str = "conversation_status_changed", estado: str = "open", **cambios: object) -> dict[str, object]:
+def _evento_conversacion(
+    evento: str = "conversation_status_changed", estado: str = "open", **cambios: object
+) -> dict[str, object]:
     """Forma de Chatwoot v4.18.0 (`conversation.webhook_data`): la conversacion en la raiz, sin `inbox`."""
     base: dict[str, object] = {
         "event": evento, "id": 555, "status": estado, "inbox_id": 2, "account": {"id": 1, "name": "Cuenta"},
@@ -815,7 +829,9 @@ def _evento_conversacion(evento: str = "conversation_status_changed", estado: st
 def soltados(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """Reemplaza a soltar_pedido_completo: anota la conversacion de cada llamado."""
     llamados: list[int] = []
-    monkeypatch.setattr("app.main.soltar_pedido_completo", lambda conversacion, config, memoria: llamados.append(conversacion))
+    monkeypatch.setattr(
+        "app.main.soltar_pedido_completo", lambda conversacion, config, memoria: llamados.append(conversacion)
+    )
     return llamados
 
 
@@ -825,7 +841,8 @@ def test_r47_evento_de_conversacion_fuera_de_pending_suelta_el_pedido(
     client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int],
     cliente_falso: ClienteFalso, turno_falso: TurnoFalso, evento: str, estado: str,
 ) -> None:
-    """R47: cualquier evento de conversacion firmado, fuera de `pending`, suelta el pedido completo; el bot no contesta."""
+    """R47: cualquier evento de conversacion firmado, fuera de `pending`, suelta el pedido completo;
+    el bot no contesta."""
     _configurar_entorno(monkeypatch)
     respuesta = _post(client, config, json.dumps(_evento_conversacion(evento, estado)).encode())
     assert (respuesta.status_code, respuesta.json()) == (200, {"estado": "ignorado"})
@@ -839,7 +856,8 @@ def test_r47_mensaje_de_cualquier_tipo_fuera_de_pending_suelta_el_pedido(
     client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int],
     turno_falso: TurnoFalso, estado: str, cambios: dict[str, object],
 ) -> None:
-    """R47: un mensaje del cliente, de la persona o una nota, con la conversacion fuera de `pending`, suelta el pedido."""
+    """R47: un mensaje del cliente, de la persona o una nota, con la conversacion fuera de `pending`,
+    suelta el pedido."""
     _configurar_entorno(monkeypatch)
     payload = _payload(conversation={"id": 555, "status": estado}, **cambios)
     assert _post(client, config, json.dumps(payload).encode()).json() == {"estado": "ignorado"}
@@ -848,7 +866,8 @@ def test_r47_mensaje_de_cualquier_tipo_fuera_de_pending_suelta_el_pedido(
 
 
 def test_r47_en_pending_ningun_evento_suelta_el_pedido(
-    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int], turno_falso: TurnoFalso
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch,
+    soltados: list[int], turno_falso: TurnoFalso
 ) -> None:
     """R47: en `pending` la conversacion es del bot: ni un evento de conversacion ni su propio mensaje sueltan nada."""
     _configurar_entorno(monkeypatch)
@@ -872,7 +891,8 @@ def test_r47_en_pending_ningun_evento_suelta_el_pedido(
     ],
 )
 def test_r47_evento_ajeno_o_roto_no_suelta_nada(
-    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int], cuerpo: dict[str, object]
+    client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch,
+    soltados: list[int], cuerpo: dict[str, object]
 ) -> None:
     """R47, R49, R51: otra cuenta u otro inbox, sin id o de otro tipo de evento, no toca el pedido de nadie."""
     _configurar_entorno(monkeypatch)
@@ -908,7 +928,8 @@ def test_r47_evento_fuera_de_pending_descarta_la_ventana_de_archivos(
     client: TestClient, config: ConfigNegocio, monkeypatch: pytest.MonkeyPatch, soltados: list[int],
     turno_falso: TurnoFalso, timer_falso: type[TimerFalso],
 ) -> None:
-    """R47, R30: con la ventana abierta, un evento fuera de `pending` la cierra, cancela el timer y no procesa lo acumulado."""
+    """R47, R30: con la ventana abierta, un evento fuera de `pending` la cierra, cancela el timer
+    y no procesa lo acumulado."""
     _configurar_entorno(monkeypatch)
     _post(client, config, _archivo(1, 1))
     _post(client, config, _archivo(2, 2, conversacion=777))  # otra conversacion: su ventana sigue

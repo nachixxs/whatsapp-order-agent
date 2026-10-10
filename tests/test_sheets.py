@@ -84,7 +84,7 @@ class SesionFalsa:
 
 
 def _conectar(
-    monkeypatch: pytest.MonkeyPatch, append: _Respuesta | Exception = _Respuesta(200, ESCRITA)
+    monkeypatch: pytest.MonkeyPatch, append: _Respuesta | Exception = _Respuesta(200, ESCRITA)  # noqa: B008 (default compartido a propósito; los tests no lo mutan)
 ) -> tuple[SesionFalsa, list[dict[str, Any]]]:
     """gspread de verdad sobre una sesión falsa; devuelve la sesión y cada llamada a service_account."""
     monkeypatch.setenv("GOOGLE_CREDENCIALES", RUTA)

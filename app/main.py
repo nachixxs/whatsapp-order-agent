@@ -7,8 +7,8 @@ import os
 import sys
 import threading
 from collections.abc import AsyncIterator, Mapping, Sequence
-from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -16,8 +16,8 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.chatwoot import ClienteChatwoot, MensajeEntrante, parsear_estado, parsear_evento
-from app.confirmacion import soltar_pedido_completo
 from app.config import RUTA_POR_DEFECTO, ConfigNegocio, cargar_config
+from app.confirmacion import soltar_pedido_completo
 from app.formato import alias_conversacion, para_log
 from app.memoria import Memoria
 from app.turno import procesar_lote
@@ -224,13 +224,13 @@ async def webhook_chatwoot(
     if evento.estado_conversacion != "pending":
         # R47: con `open`, `snoozed`, `resolved` o sin estado no es del bot: ni turno ni archivos pendientes, y un
         # "si" no confirma el resumen que vio una persona si la conversacion vuelve a `pending`
-        logger.info("Webhook Chatwoot: conversacion no pendiente estado=%s alias=%s", para_log(evento.estado_conversacion), alias)
+        logger.info("Webhook Chatwoot: conversacion no pendiente estado=%s alias=%s", para_log(evento.estado_conversacion), alias)  # noqa: E501 (techo de líneas de app/)
         _descartar_ventana(evento.id_conversacion)
         background_tasks.add_task(soltar_pedido_completo, evento.id_conversacion, config, memoria)
         return {"estado": "ignorado"}
     if mensaje is None:  # `pending` pero no es un mensaje entrante (R48)
         return {"estado": "ignorado"}
-    logger.info("Webhook Chatwoot: mensaje aceptado alias=%s evento=%s adjuntos=%d", alias, para_log(mensaje.evento), len(mensaje.adjuntos))
+    logger.info("Webhook Chatwoot: mensaje aceptado alias=%s evento=%s adjuntos=%d", alias, para_log(mensaje.evento), len(mensaje.adjuntos))  # noqa: E501 (techo de líneas de app/)
     _capturar_payload(cuerpo)
     if not _acumular(mensaje, cliente, config, memoria):
         background_tasks.add_task(_procesar_turno, evento.id_conversacion, [mensaje], cliente, config, memoria)

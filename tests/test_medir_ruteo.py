@@ -71,7 +71,7 @@ def test_cada_caso_arma_un_request_valido(config: ConfigNegocio) -> None:
         assert request["model"] == MODELO
         roles = [mensaje["role"] for mensaje in request["messages"]]
         assert roles[0] == roles[-1] == "user", caso.id
-        assert all(anterior != siguiente for anterior, siguiente in zip(roles, roles[1:])), caso.id
+        assert all(anterior != siguiente for anterior, siguiente in zip(roles, roles[1:], strict=False)), caso.id
         assert request["messages"][-1]["content"].endswith(caso.mensaje), caso.id
 
 

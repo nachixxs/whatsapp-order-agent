@@ -9,11 +9,11 @@ from datetime import datetime
 from app import agente
 from app.agente import ConsultaGeneral, Decision, DerivarAAsesor, ErrorApi, PedirDatoFaltante, RegistrarPedido, SinTool
 from app.chatwoot import Adjunto, ClienteChatwoot, Contacto, MensajeEntrante
+from app.config import ConfigNegocio
 from app.confirmacion import (
     CONFIRMADO, ESCRIBIR, Salida, a_un_asesor, candado, carrera, confirmar, derivada, pedido_confirmado,
     respuesta_al_resumen, soltar_completo,
 )
-from app.config import ConfigNegocio
 from app.contactos import Registro, leer_registro, nombre_del_perfil, plan_primer_contacto, pregunta_viva
 from app.formato import alias_conversacion, para_log
 from app.memoria import CONFIRMACION_FALLIDA, Charla, ErrorMemoria, Memoria
@@ -60,7 +60,7 @@ class Resultado:  # R47: lo que sale de un lote, en este orden: la respuesta, la
 def procesar_lote(
     conversacion: int, mensajes: Sequence[MensajeEntrante], config: ConfigNegocio, memoria: Memoria,
     decidir: Decidir = agente.decidir, planilla: Planilla = _planilla,
-    actualizar_contacto: Callable[[int, dict[str, object]], bool] = ClienteChatwoot().actualizar_contacto,
+    actualizar_contacto: Callable[[int, dict[str, object]], bool] = ClienteChatwoot().actualizar_contacto,  # noqa: B008 (un solo cliente por proceso, con credenciales perezosas R53)
 ) -> Resultado:
     """Nunca lanza: ante un error, el error interno, sin nota ni pase (R24). Un lote, una respuesta (R30)."""
     alias = alias_conversacion(conversacion)
@@ -127,7 +127,7 @@ def procesar_lote(
             if salida.motivo is not None:  # R47: con la hora del pase, lo más tarde posible dentro del candado
                 with suppress(ErrorMemoria):  # la memoria ya dejó su log; el pase sale igual
                     memoria.anotar_derivacion(conversacion, config.ahora())
-        except Exception as error:  # R23, R24: el proceso falló; se desmarca y el cliente recibe el error
+        except Exception as error:  # R23, R24: el proceso falló; se desmarca y el cliente recibe el error  # noqa: BLE001
             # Sin marcador: no se sabe en qué quedó la memoria. R52: el tipo, nunca el mensaje del error
             logger.error("turno: fallo alias=%s error=%s", alias, type(error).__name__)
             _desmarcar(memoria, nuevos)
