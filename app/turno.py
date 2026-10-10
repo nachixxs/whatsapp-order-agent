@@ -45,6 +45,8 @@ _NO_SOPORTADO = "tipo_no_soportado"
 _ERRORES = frozenset({"error_interno", CONFIRMACION_FALLIDA})  # R41: con estos, ni se registra ni se pregunta
 TOPE_MENSAJE = 4096  # R35: el de WhatsApp; el historial entero vuelve a la API en cada llamada
 NO_SOPORTADO = "[adjunto no soportado]"  # R36: lo que queda en el historial del lado del cliente
+TOPE_DE_MENSAJES = 30  # mensajes del cliente por conversación de Chatwoot (decidido 2026-10-10); otra id, de cero
+_TOPE = "tope_de_mensajes"  # el motivo de la derivación; el modelo no lo puede elegir
 _planilla = Planilla()  # R53: abre la hoja recién en la primera escritura
 
 
@@ -85,15 +87,22 @@ def procesar_lote(
             if not lote:
                 logger.info("turno: sin mensajes nuevos alias=%s", alias)
                 return Resultado(None)
+            # §3: un archivo sin epígrafe no va a la API ni cuenta para el techo del gasto (R35: hasta 60 archivos).
+            # Pasado el tope no se llama a la API: se deriva como cualquier otro motivo (R47)
+            al_modelo = sum(bool(mensaje.contenido.strip() or not mensaje.adjuntos) for mensaje in lote)
+            topado = memoria.contar_mensajes(conversacion, al_modelo) > TOPE_DE_MENSAJES
             contacto = mensajes[-1].contacto
             registro = leer_registro(contacto.atributos, memoria.leer_charla(conversacion, ahora).atributos)
             archivos = _sumar_archivos(conversacion, lote, contacto.telefono, config, memoria, ahora)
             texto = None
-            if any(mensaje.contenido.strip() or not mensaje.adjuntos for mensaje in lote):  # §3
+            if al_modelo and not topado:
                 decision, texto = _turno(conversacion, contacto, registro, config, memoria, decidir, planilla, ahora)
                 if isinstance(decision, ErrorApi) and _reintentable(decision):
                     _desmarcar(memoria, nuevos)
-            salida = _elegir(texto, archivos, lote, conversacion, config, memoria, ahora)
+            if topado:  # R30: ni el error ni el acuse de un archivo lo tapan
+                salida = a_un_asesor(_TOPE, config)
+            else:
+                salida = _elegir(texto, archivos, lote, conversacion, config, memoria, ahora)
             if salida.motivo is not None:  # R47
                 charla = soltar_completo(conversacion, memoria, ahora)
                 salida = derivada(salida, charla, registro and registro.nombre_cliente, config, ahora)
