@@ -1,17 +1,17 @@
 """Batería de ruteo (R17): estima el costo sin red o mide el set dorado por Message Batches.
 
 Uso, desde la raíz del repo (PowerShell):
-    .venv\\Scripts\\python.exe scripts\\medir_ruteo.py                         # --estimar: sin red, no gasta
-    .venv\\Scripts\\python.exe scripts\\medir_ruteo.py --solo-fallados .ruteo-fallados.json
-    .venv\\Scripts\\python.exe scripts\\medir_ruteo.py --correr --corridas 3   # gasta API: solo con OK
-    .venv\\Scripts\\python.exe scripts\\medir_ruteo.py --correr --solo-fallados .ruteo-fallados.json
-    .venv\\Scripts\\python.exe scripts\\medir_ruteo.py --retomar msgbatch_...  # baja un lote ya pagado
+    uv run --locked python scripts\\medir_ruteo.py                            # --estimar: sin red, no gasta
+    uv run --locked python scripts\\medir_ruteo.py --solo-fallados .ruteo-fallados.json
+    uv run --locked python scripts\\medir_ruteo.py --correr --corridas 3      # gasta API: solo con OK
+    uv run --locked python scripts\\medir_ruteo.py --correr --solo-fallados .ruteo-fallados.json
+    uv run --locked python scripts\\medir_ruteo.py --retomar msgbatch_...     # baja un lote ya pagado
 
 Con una config y unos casos que no son los del repo (los reales viven en otro repo, privado):
     $privado = "C:\\ruta\\al\\repo\\privado"
-    .venv\\Scripts\\python.exe scripts\\medir_ruteo.py --config $privado\\config\\negocio.json `
+    uv run --locked python scripts\\medir_ruteo.py --config $privado\\config\\negocio.json `
         --casos $privado\\ruteo\\casos.json                                  # --estimar, sin red
-    .venv\\Scripts\\python.exe scripts\\medir_ruteo.py --config $privado\\config\\negocio.json `
+    uv run --locked python scripts\\medir_ruteo.py --config $privado\\config\\negocio.json `
         --casos $privado\\ruteo\\casos.json --correr                         # gasta API: solo con OK
 
 Sin --config ni --casos: config/negocio.ejemplo.json, tests/ruteo/casos.json y los fallados en .ruteo-fallados.json.

@@ -3,7 +3,9 @@
 # Cómo le llega Chatwoot al bot (tarea 1.5, tunel/webhook):
 #   Chatwoot corre en su propio contenedor (compose.chatwoot.yml) y el bot en este compose.
 #   Desde adentro del contenedor de Chatwoot, la URL del bot para el webhook es:
-#     http://host.docker.internal:8020/webhook/chatwoot?token=<CHATWOOT_WEBHOOK_SECRET>
+#     http://host.docker.internal:8020/webhook/chatwoot
+#   La URL va sin token: el bot valida la firma HMAC `X-Chatwoot-Signature`. El secret que
+#   Chatwoot genera para el Agent Bot va a CHATWOOT_WEBHOOK_SECRET en el `.env`.
 #   `host.docker.internal` resuelve al host en Docker Desktop (Windows/Mac); en Linux hace
 #   falta el extra_hosts que ya está declarado abajo.
 #
